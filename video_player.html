@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Video declenchee</title>
+  <title>Keep Focus!</title>
   <style>
     :root {
       color-scheme: dark;
@@ -40,7 +40,8 @@
     }
 
     .badge,
-    .hint {
+    .hint,
+    .intro {
       position: fixed;
       z-index: 10;
       padding: 10px 14px;
@@ -69,27 +70,48 @@
       color: var(--muted);
     }
 
+    .intro {
+      left: 18px;
+      bottom: 18px;
+      max-width: 420px;
+      padding: 16px 18px;
+      font-size: 14px;
+      line-height: 1.35;
+      color: #fff;
+    }
+
+    .intro strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 22px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
     .is-playing .badge {
       background: rgba(255, 90, 54, 0.22);
       border-color: rgba(255, 90, 54, 0.5);
       color: #fff1ed;
     }
 
-    .is-playing .hint {
+    .is-playing .hint,
+    .is-playing .intro {
       opacity: 0;
       pointer-events: none;
       transform: translateY(10px);
     }
 
     .hint,
-    .badge {
+    .badge,
+    .intro {
       transition: opacity 140ms ease, transform 140ms ease, background 140ms ease;
     }
   </style>
 </head>
 <body>
-  <div class="badge" id="status">En attente</div>
-  <div class="hint">La video demarre avec le son des que tu detournes le regard. Elle se met en pause quand tu reviens sur l'ecran.</div>
+  <div class="badge" id="status">Waiting</div>
+  <div class="intro"><strong>Keep Focus!</strong>Stop scrolling or I will start tamtam!</div>
+  <div class="hint">The video starts with sound as soon as you look away. It pauses again when you come back to the screen.</div>
   <video id="player" preload="auto" playsinline></video>
   <script>
     const player = document.getElementById("player");
@@ -102,7 +124,7 @@
 
     function reflectUi(isPlaying) {
       document.body.classList.toggle("is-playing", isPlaying);
-      status.textContent = isPlaying ? "Lecture active" : "En attente";
+      status.textContent = isPlaying ? "Playing" : "Waiting";
     }
 
     async function syncState() {

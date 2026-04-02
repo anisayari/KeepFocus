@@ -20,7 +20,7 @@ from pytube import YouTube, extract
 
 
 YOUTUBE_URL = "https://www.youtube.com/watch?v=lIIhz2Glx7s"
-WINDOW_NAME = "Gaze Focus TamTam"
+WINDOW_NAME = "Keep Focus!"
 BASE_DIR = Path(__file__).resolve().parent
 VIDEO_DIR = BASE_DIR / "videos"
 VIDEO_PATH = VIDEO_DIR / "youtube_trigger_video.mp4"

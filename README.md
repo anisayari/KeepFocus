@@ -1,4 +1,6 @@
-# Gaze Focus TamTam
+# Keep Focus!
+
+> Stop scrolling or I will start tamtam!
 
 Cross-platform tool for macOS and Windows that tracks your gaze with the webcam:
 
