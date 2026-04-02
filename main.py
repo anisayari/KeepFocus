@@ -1330,7 +1330,6 @@ class ControlledVideoPlayer:
         self.playing = False
         self.play_request_id = 0
         self.last_activate_time = 0.0
-        self.last_window_probe_time = 0.0
         self.macos_window_known_open = False
 
     @property
@@ -1386,11 +1385,6 @@ class ControlledVideoPlayer:
 
     def _window_is_open(self) -> bool:
         if platform.system() == "Darwin" and self.browser_app_name is not None:
-            now = time.monotonic()
-            if self.macos_window_known_open and now - self.last_window_probe_time < 1.5:
-                return True
-            self.macos_window_known_open = self._mac_player_window_exists()
-            self.last_window_probe_time = now
             return self.macos_window_known_open
         return self.process is not None and self.process.poll() is None
 
@@ -1414,30 +1408,6 @@ class ControlledVideoPlayer:
             check=False,
         )
 
-    def _mac_player_window_exists(self) -> bool:
-        if platform.system() != "Darwin" or self.browser_app_name is None:
-            return False
-        script = f'''
-tell application "{self.browser_app_name}"
-    repeat with currentWindow in windows
-        try
-            set currentUrl to URL of active tab of currentWindow
-            if currentUrl starts with "{self.player_url}" then
-                return "1"
-            end if
-        end try
-    end repeat
-    return "0"
-end tell
-'''
-        result = subprocess.run(
-            ["osascript", "-e", script],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.returncode == 0 and result.stdout.strip() == "1"
-
     def _mac_close_player_windows(self) -> None:
         if platform.system() != "Darwin" or self.browser_app_name is None:
             return
@@ -1460,7 +1430,6 @@ end tell
             check=False,
         )
         self.macos_window_known_open = False
-        self.last_window_probe_time = time.monotonic()
 
     def _activate_window(self, *, force: bool = False) -> None:
         if platform.system() != "Darwin":
@@ -1500,7 +1469,6 @@ end tell
         )
         if platform.system() == "Darwin":
             self.macos_window_known_open = True
-            self.last_window_probe_time = time.monotonic()
 
     def start(self) -> None:
         with self.state_lock:
@@ -1516,14 +1484,14 @@ end tell
 
     def update(self) -> None:
         if self.is_active:
-            self._ensure_window()
-            self._activate_window()
+            if platform.system() != "Darwin":
+                self._ensure_window()
 
     def stop(self) -> None:
         with self.state_lock:
             self.playing = False
         if platform.system() == "Darwin":
-            self._mac_close_player_windows()
+            self._mac_hide()
         else:
             self._mac_hide()
 
@@ -1561,7 +1529,6 @@ end tell
             self.server_thread.join(timeout=3)
             self.server_thread = None
         self.last_activate_time = 0.0
-        self.last_window_probe_time = 0.0
         self.macos_window_known_open = False
 
 
