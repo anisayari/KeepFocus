@@ -2347,7 +2347,7 @@ def main() -> int:
     attention_stabilizer = AttentionStabilizer()
     screen_offset_adaptor = ScreenOffsetAdaptor(calibration_profile)
     last_looking_time = time.monotonic()
-    away_video_started = False
+    non_screen_video_started = False
     last_logged_attention_state: str | None = None
 
     try:
@@ -2396,23 +2396,25 @@ def main() -> int:
             if attention_state != last_logged_attention_state:
                 append_debug_log(f"attention:state={attention_state}")
                 last_logged_attention_state = attention_state
-            if attention_state in {"screen", "phone"}:
+            if attention_state == "screen":
                 last_looking_time = now
-                away_video_started = False
+                non_screen_video_started = False
                 if player.is_active:
                     append_debug_log(f"player:stop because state={attention_state}")
                     player.stop()
 
             away_seconds = max(0.0, now - last_looking_time)
             if (
-                attention_state == "away"
+                attention_state in {"away", "phone"}
                 and away_seconds >= NOT_LOOKING_TRIGGER_SECONDS
-                and not away_video_started
+                and not non_screen_video_started
             ):
                 try:
-                    append_debug_log(f"player:start because away_seconds={away_seconds:.2f}")
+                    append_debug_log(
+                        f"player:start because state={attention_state} away_seconds={away_seconds:.2f}"
+                    )
                     player.start()
-                    away_video_started = True
+                    non_screen_video_started = True
                 except Exception as exc:
                     append_debug_log(f"player:start failed error={exc}")
                     print(f"Impossible de lancer la video: {exc}")
