@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Video declenchee</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #05070d;
+      --panel: rgba(18, 24, 38, 0.82);
+      --accent: #ff5a36;
+      --muted: #aab6c9;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top, rgba(255, 90, 54, 0.18), transparent 32%),
+        linear-gradient(180deg, #0a0f1b 0%, var(--bg) 70%);
+      height: 100%;
+      overflow: hidden;
+      font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+    }
+
+    body {
+      display: grid;
+      place-items: center;
+    }
+
+    video {
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .badge,
+    .hint {
+      position: fixed;
+      z-index: 10;
+      padding: 10px 14px;
+      border-radius: 999px;
+      backdrop-filter: blur(10px);
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      letter-spacing: 0.04em;
+    }
+
+    .badge {
+      top: 18px;
+      left: 18px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      color: #fff;
+    }
+
+    .hint {
+      right: 18px;
+      bottom: 18px;
+      max-width: 340px;
+      font-size: 13px;
+      line-height: 1.35;
+      color: var(--muted);
+    }
+
+    .is-playing .badge {
+      background: rgba(255, 90, 54, 0.22);
+      border-color: rgba(255, 90, 54, 0.5);
+      color: #fff1ed;
+    }
+
+    .is-playing .hint {
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(10px);
+    }
+
+    .hint,
+    .badge {
+      transition: opacity 140ms ease, transform 140ms ease, background 140ms ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="badge" id="status">En attente</div>
+  <div class="hint">La video demarre avec le son des que tu detournes le regard. Elle se met en pause quand tu reviens sur l'ecran.</div>
+  <video id="player" preload="auto" playsinline></video>
+  <script>
+    const player = document.getElementById("player");
+    const status = document.getElementById("status");
+    let desiredPlaying = false;
+    let lastDesiredPlaying = false;
+
+    player.src = "/videos/youtube_trigger_video.mp4";
+    player.volume = 1.0;
+
+    function reflectUi(isPlaying) {
+      document.body.classList.toggle("is-playing", isPlaying);
+      status.textContent = isPlaying ? "Lecture active" : "En attente";
+    }
+
+    async function syncState() {
+      try {
+        const response = await fetch("/state", { cache: "no-store" });
+        const data = await response.json();
+        desiredPlaying = !!data.playing;
+
+        if (desiredPlaying) {
+          if (!lastDesiredPlaying) {
+            player.currentTime = 0;
+          }
+          if (player.paused) {
+            await player.play().catch(() => {});
+          }
+        } else if (!player.paused) {
+          player.pause();
+        }
+
+        reflectUi(desiredPlaying);
+        lastDesiredPlaying = desiredPlaying;
+      } catch (_) {
+      }
+    }
+
+    player.addEventListener("canplay", () => {
+      if (desiredPlaying && player.paused) {
+        player.play().catch(() => {});
+      }
+    });
+
+    setInterval(syncState, 100);
+    reflectUi(false);
+    syncState();
+  </script>
+</body>
+</html>

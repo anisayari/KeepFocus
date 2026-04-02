@@ -1,0 +1,7 @@
+.venv/
+.video_player_profile/
+__pycache__/
+*.py[cod]
+*.log
+attention_calibration.json
+gcm-diagnose.log
