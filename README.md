@@ -11,6 +11,7 @@ Cross-platform tool for macOS and Windows that tracks your gaze with the webcam 
 - after each calibration announcement, there is a short repositioning delay before capture starts ⏱️
 - calibration now captures more samples for each target 📊
 - gaze detection is smoothed over time and stabilized across several frames for better robustness 🧱
+- calibration now also models face distance and is more tolerant to small screen angle changes 📏
 - during calibration, a stability score is shown live ✅
 - after calibration, a verification pass gives you a final score and a clear check result 🎯
 - right after calibration, one panel shows the average `screen` and `phone` values used by the classifier 📈
@@ -66,5 +67,6 @@ The Windows script:
 - Chrome is preferred on macOS for the video player.
 - Chrome or Edge works on Windows.
 - The calibration profile is saved in `attention_calibration.json`.
+- If an older saved calibration becomes incompatible with the newer classifier, the app will ask you to recalibrate.
 - The video window comes to the front when the state becomes `away`.
 - On macOS, the video window is hidden again when the state returns to `screen` or `phone`.

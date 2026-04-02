@@ -71,11 +71,13 @@ STATE_CONFIRM_FRAMES_SCREEN = 3
 STATE_CONFIRM_FRAMES_PHONE = 3
 STATE_CONFIRM_FRAMES_AWAY = 7
 SCREEN_OFFSET_ADAPT_ALPHA = 0.05
-SCREEN_OFFSET_MAX = np.array([14.0, 14.0, 10.0, 0.18, 0.18], dtype=np.float64)
+SCREEN_OFFSET_MAX = np.array([14.0, 14.0, 10.0, 0.18, 0.18, 0.05], dtype=np.float64)
 SCREEN_ADAPT_MARGIN = 0.7
-CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y")
-CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08], dtype=np.float64)
-CALIBRATION_FEATURE_WEIGHTS = np.array([1.0, 1.0, 0.8, 1.25, 1.25], dtype=np.float64)
+SCREEN_HOLD_MARGIN = -1.15
+SCREEN_HOLD_DISTANCE_MULTIPLIER = 1.22
+CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y", "face_scale")
+CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08, 0.018], dtype=np.float64)
+CALIBRATION_FEATURE_WEIGHTS = np.array([1.0, 1.0, 0.8, 1.25, 1.25, 0.7], dtype=np.float64)
 
 LEFT_IRIS = (468, 469, 470, 471, 472)
 RIGHT_IRIS = (473, 474, 475, 476, 477)
@@ -360,7 +362,7 @@ def build_calibration_profile(
     phone_distance_limit = float(max(np.percentile(phone_self_distances, 92) + 0.65, 2.2))
 
     return {
-        "version": 1,
+        "version": 2,
         "screen_center": screen_center.tolist(),
         "screen_scale": screen_scale.tolist(),
         "phone_center": phone_center.tolist(),
@@ -391,6 +393,13 @@ def load_calibration_profile() -> dict[str, Any] | None:
     }
     if not required_keys.issubset(profile):
         return None
+    if int(profile.get("version", 0)) < 2:
+        return None
+    expected_length = len(CALIBRATION_FEATURE_KEYS)
+    for key in ("screen_center", "screen_scale", "phone_center", "phone_scale"):
+        value = profile.get(key)
+        if not isinstance(value, list) or len(value) != expected_length:
+            return None
     return profile
 
 
@@ -500,6 +509,8 @@ def calibration_feature_bounds(feature_name: str) -> tuple[float, float]:
         return -35.0, 35.0
     if feature_name == "roll":
         return -25.0, 25.0
+    if feature_name == "face_scale":
+        return 0.04, 0.30
     return 0.0, 1.0
 
 
@@ -510,6 +521,7 @@ def calibration_feature_label(feature_name: str) -> str:
         "roll": "Roll",
         "gaze_x": "Gaze X",
         "gaze_y": "Gaze Y",
+        "face_scale": "Face Scale",
     }
     return labels.get(feature_name, feature_name)
 
@@ -985,6 +997,22 @@ def compute_iris_ratios(
     return left_horizontal, right_horizontal, left_vertical, right_vertical
 
 
+def compute_face_scale(
+    landmarks: list[Any],
+    width: int,
+    height: int,
+) -> float:
+    left_eye_center = average_point(landmarks, LEFT_EYE_BOX, width, height)
+    right_eye_center = average_point(landmarks, RIGHT_EYE_BOX, width, height)
+    eye_distance = float(np.linalg.norm(right_eye_center - left_eye_center))
+    face_top = landmark_point(landmarks, 10, width, height)
+    face_bottom = landmark_point(landmarks, 152, width, height)
+    face_height = float(np.linalg.norm(face_bottom - face_top))
+    normalized_eye_distance = eye_distance / max(width, 1)
+    normalized_face_height = face_height / max(height, 1)
+    return float((normalized_eye_distance * 0.55) + (normalized_face_height * 0.45))
+
+
 def estimate_head_pose(
     landmarks: list[Any],
     width: int,
@@ -1053,6 +1081,7 @@ def extract_attention_metrics(
 ) -> dict[str, float]:
     yaw, pitch, roll = estimate_head_pose(landmarks, width, height)
     left_h, right_h, left_v, right_v = compute_iris_ratios(landmarks, width, height)
+    face_scale = compute_face_scale(landmarks, width, height)
 
     horizontal_ratio = (left_h + right_h) / 2
     vertical_ratio = (left_v + right_v) / 2
@@ -1063,6 +1092,7 @@ def extract_attention_metrics(
         "roll": roll,
         "gaze_x": horizontal_ratio,
         "gaze_y": vertical_ratio,
+        "face_scale": face_scale,
     }
 
 
@@ -1177,6 +1207,35 @@ def build_calibration_diagnostics(
         "screen_distance_limit": float(calibration_profile["screen_distance_limit"]),
         "phone_distance_limit": float(calibration_profile["phone_distance_limit"]),
     }
+
+
+def apply_attention_hysteresis(
+    raw_attention_state: str,
+    metrics: dict[str, float],
+    current_stable_state: str,
+    calibration_profile: dict[str, Any] | None,
+) -> str:
+    if calibration_profile is None:
+        return raw_attention_state
+    if current_stable_state != "screen":
+        return raw_attention_state
+    if raw_attention_state != "away":
+        return raw_attention_state
+
+    screen_distance = float(metrics.get("screen_distance", 999.0))
+    screen_limit = float(calibration_profile["screen_distance_limit"])
+    screen_margin = float(metrics.get("screen_margin", -999.0))
+    phone_distance = float(metrics.get("phone_distance", 999.0))
+    phone_limit = float(calibration_profile["phone_distance_limit"])
+
+    likely_small_screen_shift = (
+        screen_distance <= screen_limit * SCREEN_HOLD_DISTANCE_MULTIPLIER
+        and screen_margin >= SCREEN_HOLD_MARGIN
+        and phone_distance > phone_limit * 0.82
+    )
+    if likely_small_screen_shift:
+        return "screen"
+    return raw_attention_state
 
 
 class ControlledVideoPlayer:
@@ -1929,7 +1988,10 @@ def draw_status_overlay(
         )
         cv2.putText(
             frame,
-            f"Gaze X: {metrics['gaze_x']:.2f}  Gaze Y: {metrics['gaze_y']:.2f}",
+            (
+                f"Gaze X: {metrics['gaze_x']:.2f}  Gaze Y: {metrics['gaze_y']:.2f}  "
+                f"Face: {metrics.get('face_scale', 0.0):.3f}"
+            ),
             (520, bottom_y),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
@@ -2053,6 +2115,12 @@ def main() -> int:
                         "attention_state",
                         "screen" if looking_at_screen else "away",
                     )
+                )
+                raw_attention_state = apply_attention_hysteresis(
+                    raw_attention_state,
+                    metrics,
+                    attention_stabilizer.stable_state,
+                    calibration_profile,
                 )
                 attention_state = attention_stabilizer.update(raw_attention_state)
                 metrics["raw_attention_state"] = raw_attention_state
