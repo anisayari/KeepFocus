@@ -6,7 +6,8 @@ Petit outil macOS qui surveille ton regard avec la webcam:
 - si tu regardes le telephone, la video reste cachee ;
 - si tu detournes vraiment le regard, la video passe au premier plan et se lance avec le son ;
 - la calibration peut parler sur Mac pour te dire quand changer de cible ;
-- pendant la calibration, un score de stabilite s'affiche et une verification finale donne un score + un check.
+- pendant la calibration, un score de stabilite s'affiche et une verification finale donne un score + un check ;
+- juste apres la calibration, un panneau montre les moyennes `ecran` et `telephone` utilisees par le systeme.
 
 ## Lancer sur Mac
 

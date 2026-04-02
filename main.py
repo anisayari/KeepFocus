@@ -404,6 +404,160 @@ def badge_width(
     return text_width + padding_x * 2
 
 
+def calibration_feature_bounds(feature_name: str) -> tuple[float, float]:
+    if feature_name in {"yaw", "pitch"}:
+        return -35.0, 35.0
+    if feature_name == "roll":
+        return -25.0, 25.0
+    return 0.0, 1.0
+
+
+def calibration_feature_label(feature_name: str) -> str:
+    labels = {
+        "yaw": "Yaw",
+        "pitch": "Pitch",
+        "roll": "Roll",
+        "gaze_x": "Gaze X",
+        "gaze_y": "Gaze Y",
+    }
+    return labels.get(feature_name, feature_name)
+
+
+def draw_calibration_summary_panel(
+    frame: np.ndarray,
+    calibration_profile: dict[str, Any],
+) -> None:
+    panel_width = min(430, max(320, frame.shape[1] // 3))
+    x1 = frame.shape[1] - panel_width - 16
+    y1 = 96
+    x2 = frame.shape[1] - 16
+    y2 = frame.shape[0] - 90
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (15, 20, 32), -1)
+    cv2.addWeighted(overlay, 0.90, frame, 0.10, 0.0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 90, 112), 1)
+
+    title_y = y1 + 28
+    cv2.putText(
+        frame,
+        "MOYENNES CALIBRATION",
+        (x1 + 16, title_y),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.62,
+        (255, 255, 255),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+
+    screen_center = np.array(calibration_profile["screen_center"], dtype=np.float64)
+    phone_center = np.array(calibration_profile["phone_center"], dtype=np.float64)
+    validation_score = calibration_profile.get("validation_score")
+    validation_label = (
+        f"Check: {float(validation_score):.0f}/100"
+        if validation_score is not None
+        else "Check: n/a"
+    )
+    cv2.putText(
+        frame,
+        validation_label,
+        (x1 + 16, title_y + 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.46,
+        (155, 221, 177) if calibration_profile.get("validation_passed") else (255, 212, 140),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+
+    row_y = title_y + 58
+    bar_left = x1 + 118
+    bar_right = x2 - 16
+    bar_width = bar_right - bar_left
+
+    for feature_name, screen_value, phone_value in zip(
+        CALIBRATION_FEATURE_KEYS,
+        screen_center,
+        phone_center,
+    ):
+        low, high = calibration_feature_bounds(feature_name)
+        ratio_screen = float(np.clip((screen_value - low) / (high - low), 0.0, 1.0))
+        ratio_phone = float(np.clip((phone_value - low) / (high - low), 0.0, 1.0))
+
+        cv2.putText(
+            frame,
+            calibration_feature_label(feature_name),
+            (x1 + 16, row_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (235, 235, 235),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (bar_left, row_y - 6),
+            (bar_right, row_y - 6),
+            (75, 81, 96),
+            2,
+            lineType=cv2.LINE_AA,
+        )
+        screen_x = bar_left + int(bar_width * ratio_screen)
+        phone_x = bar_left + int(bar_width * ratio_phone)
+        cv2.circle(frame, (screen_x, row_y - 6), 6, (0, 190, 0), -1, lineType=cv2.LINE_AA)
+        cv2.circle(frame, (phone_x, row_y - 6), 6, (0, 165, 255), -1, lineType=cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            f"E {screen_value:+.2f}",
+            (bar_left, row_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (140, 255, 140),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"T {phone_value:+.2f}",
+            (bar_left + 128, row_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (120, 210, 255),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.putText(
+            frame,
+            f"D {screen_value - phone_value:+.2f}",
+            (bar_left + 256, row_y + 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.43,
+            (222, 222, 222),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        row_y += 58
+
+    footer_lines = [
+        f"Score seuil: {float(calibration_profile['decision_boundary']):+.2f}",
+        f"Limite ecran: {float(calibration_profile['screen_distance_limit']):.2f}",
+        f"Limite tel: {float(calibration_profile['phone_distance_limit']):.2f}",
+        "Vert = ecran, orange = telephone",
+    ]
+    footer_y = y2 - 64
+    for line in footer_lines:
+        cv2.putText(
+            frame,
+            line,
+            (x1 + 16, footer_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.44,
+            (205, 208, 215),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        footer_y += 18
+
+
 def normalize_download_path(downloaded_path: Path, final_path: Path) -> Path:
     if downloaded_path == final_path:
         return final_path
@@ -1188,13 +1342,14 @@ def run_calibration(
         )
     save_calibration_profile(profile)
 
-    success_end = time.monotonic() + 2.4
+    success_end = time.monotonic() + 5.0
     while time.monotonic() < success_end:
         ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
         if not ok or frame is None:
             return profile
         if landmarks is not None:
             draw_face_visuals(frame, landmarks, color_override=(0, 220, 255))
+        draw_calibration_summary_panel(frame, profile)
         validation_score = float(profile.get("validation_score", 0.0))
         validation_status = (
             "CHECK OK"
@@ -1208,6 +1363,7 @@ def run_calibration(
                 "Le profil a ete enregistre",
                 f"Score verification: {validation_score:.0f}/100",
                 validation_status,
+                "Lis le panneau a droite pour voir les moyennes calculees",
             ],
             color=(0, 220, 120) if bool(profile.get("validation_passed")) else (0, 190, 255),
         )
