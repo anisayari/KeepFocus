@@ -3,5 +3,6 @@
 __pycache__/
 *.py[cod]
 *.log
+keepfocus-debug.log
 attention_calibration.json
 gcm-diagnose.log

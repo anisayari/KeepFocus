@@ -32,6 +32,7 @@ PYTHON_PLAYER_SCRIPT_PATH = BASE_DIR / "python_video_player.py"
 PLAYER_PROFILE_DIR = BASE_DIR / ".video_player_profile"
 CALIBRATION_PATH = BASE_DIR / "attention_calibration.json"
 MACOS_SOUND_PATH = Path("/System/Library/Sounds/Ping.aiff")
+DEBUG_LOG_PATH = BASE_DIR / "keepfocus-debug.log"
 MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/"
     "face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
@@ -175,6 +176,15 @@ def ensure_python_player_script() -> Path:
     if not PYTHON_PLAYER_SCRIPT_PATH.exists():
         raise FileNotFoundError(f"Lecteur Python introuvable: {PYTHON_PLAYER_SCRIPT_PATH}")
     return PYTHON_PLAYER_SCRIPT_PATH
+
+
+def append_debug_log(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        pass
 
 
 def open_camera() -> cv2.VideoCapture:
@@ -1546,6 +1556,9 @@ class PythonFFPyPlayerProcessPlayer:
         self.script_path = script_path
         self.process: subprocess.Popen[bytes] | None = None
         self.playing = False
+        append_debug_log(
+            f"python-player:init script={self.script_path.name} video={self.video_path.name}"
+        )
 
     @property
     def is_active(self) -> bool:
@@ -1556,7 +1569,9 @@ class PythonFFPyPlayerProcessPlayer:
 
     def _launch_process(self) -> None:
         if self._process_is_alive():
+            append_debug_log("python-player:launch skipped process already alive")
             return
+        append_debug_log("python-player:launch requested")
         self.process = subprocess.Popen(
             [
                 sys.executable,
@@ -1573,23 +1588,30 @@ class PythonFFPyPlayerProcessPlayer:
                 str(PLAYER_WINDOW_Y),
                 "--title",
                 WINDOW_NAME,
+                "--log",
+                str(DEBUG_LOG_PATH),
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        append_debug_log(f"python-player:spawned pid={self.process.pid}")
 
     def start(self) -> None:
         self.playing = True
+        append_debug_log("python-player:start")
         self._launch_process()
 
     def update(self) -> None:
         if self.playing and not self._process_is_alive():
+            exit_code = None if self.process is None else self.process.poll()
+            append_debug_log(f"python-player:process exited code={exit_code}")
             self.playing = False
             self.process = None
 
     def stop(self) -> None:
         self.playing = False
+        append_debug_log("python-player:stop")
         if not self._process_is_alive():
             self.process = None
             return
@@ -1606,14 +1628,18 @@ class PythonFFPyPlayerProcessPlayer:
                 )
             else:
                 os.killpg(process.pid, signal.SIGTERM)
+            append_debug_log(f"python-player:terminate signal pid={process.pid}")
         except ProcessLookupError:
+            append_debug_log("python-player:terminate skipped missing process")
             return
         try:
             process.wait(timeout=2)
+            append_debug_log(f"python-player:terminated code={process.returncode}")
         except subprocess.TimeoutExpired:
             if platform.system() != "Windows":
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
+                    append_debug_log(f"python-player:forced kill pid={process.pid}")
                 except ProcessLookupError:
                     pass
 
@@ -1624,10 +1650,13 @@ class PythonFFPyPlayerProcessPlayer:
 def build_video_player(video_path: Path) -> Any:
     if PYTHON_PLAYER_SCRIPT_PATH.exists():
         try:
+            append_debug_log("video-player:selected python process player")
             return PythonFFPyPlayerProcessPlayer(video_path, ensure_python_player_script())
         except Exception as exc:
+            append_debug_log(f"video-player:python player init failed error={exc}")
             print(f"Lecteur Python interne indisponible, fallback navigateur: {exc}")
 
+    append_debug_log("video-player:fallback browser player")
     browser_command = find_browser_command()
     player_html = ensure_video_player_html()
     return ControlledVideoPlayer(video_path, browser_command, player_html)
@@ -2254,11 +2283,17 @@ def calibration_mode_text(calibration_profile: dict[str, Any] | None) -> str:
 
 
 def main() -> int:
+    append_debug_log("app:start")
+    try:
+        DEBUG_LOG_PATH.touch(exist_ok=True)
+    except OSError:
+        pass
     try:
         video_path = ensure_video_downloaded()
         model_path = ensure_face_landmarker_model()
         saved_calibration_profile = load_calibration_profile()
     except Exception as exc:
+        append_debug_log(f"app:resource preparation failed error={exc}")
         print(f"Erreur pendant la preparation des ressources: {exc}")
         return 1
 
@@ -2312,6 +2347,8 @@ def main() -> int:
     attention_stabilizer = AttentionStabilizer()
     screen_offset_adaptor = ScreenOffsetAdaptor(calibration_profile)
     last_looking_time = time.monotonic()
+    away_video_started = False
+    last_logged_attention_state: str | None = None
 
     try:
         while True:
@@ -2356,20 +2393,28 @@ def main() -> int:
                 attention_state = attention_stabilizer.update("away")
 
             now = time.monotonic()
+            if attention_state != last_logged_attention_state:
+                append_debug_log(f"attention:state={attention_state}")
+                last_logged_attention_state = attention_state
             if attention_state in {"screen", "phone"}:
                 last_looking_time = now
+                away_video_started = False
                 if player.is_active:
+                    append_debug_log(f"player:stop because state={attention_state}")
                     player.stop()
 
             away_seconds = max(0.0, now - last_looking_time)
             if (
                 attention_state == "away"
                 and away_seconds >= NOT_LOOKING_TRIGGER_SECONDS
-                and not player.is_active
+                and not away_video_started
             ):
                 try:
+                    append_debug_log(f"player:start because away_seconds={away_seconds:.2f}")
                     player.start()
+                    away_video_started = True
                 except Exception as exc:
+                    append_debug_log(f"player:start failed error={exc}")
                     print(f"Impossible de lancer la video: {exc}")
                     break
 
