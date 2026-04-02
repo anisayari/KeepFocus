@@ -57,6 +57,7 @@ The Windows script:
 ## 📁 Useful Files
 
 - [main.py](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/main.py): webcam logic, gaze detection, calibration, player control
+- [python_video_player.py](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/python_video_player.py): embedded Python mini player used on macOS
 - [video_player.html](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/video_player.html): video window
 - [videos/youtube_trigger_video.mp4](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/videos/youtube_trigger_video.mp4): video clip played when you look away
 - [models/face_landmarker.task](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/models/face_landmarker.task): MediaPipe model
@@ -65,7 +66,8 @@ The Windows script:
 
 ## 📝 Notes
 
-- Chrome is preferred on macOS for the video player.
+- The app now prefers a native Python mini player powered by `ffpyplayer`.
+- If the embedded Python player is unavailable, it falls back to the browser player automatically.
 - Chrome or Edge works on Windows.
 - The calibration profile is saved in `attention_calibration.json`.
 - If an older saved calibration becomes incompatible with the newer classifier, the app will ask you to recalibrate.

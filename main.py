@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -27,6 +28,7 @@ VIDEO_PATH = VIDEO_DIR / "youtube_trigger_video.mp4"
 MODEL_DIR = BASE_DIR / "models"
 MODEL_PATH = MODEL_DIR / "face_landmarker.task"
 PLAYER_HTML_PATH = BASE_DIR / "video_player.html"
+PYTHON_PLAYER_SCRIPT_PATH = BASE_DIR / "python_video_player.py"
 PLAYER_PROFILE_DIR = BASE_DIR / ".video_player_profile"
 CALIBRATION_PATH = BASE_DIR / "attention_calibration.json"
 MACOS_SOUND_PATH = Path("/System/Library/Sounds/Ping.aiff")
@@ -167,6 +169,12 @@ def ensure_video_player_html() -> Path:
     if not PLAYER_HTML_PATH.exists():
         raise FileNotFoundError(f"Lecteur video introuvable: {PLAYER_HTML_PATH}")
     return PLAYER_HTML_PATH
+
+
+def ensure_python_player_script() -> Path:
+    if not PYTHON_PLAYER_SCRIPT_PATH.exists():
+        raise FileNotFoundError(f"Lecteur Python introuvable: {PYTHON_PLAYER_SCRIPT_PATH}")
+    return PYTHON_PLAYER_SCRIPT_PATH
 
 
 def open_camera() -> cv2.VideoCapture:
@@ -1532,6 +1540,99 @@ end tell
         self.macos_window_known_open = False
 
 
+class PythonFFPyPlayerProcessPlayer:
+    def __init__(self, video_path: Path, script_path: Path) -> None:
+        self.video_path = video_path
+        self.script_path = script_path
+        self.process: subprocess.Popen[bytes] | None = None
+        self.playing = False
+
+    @property
+    def is_active(self) -> bool:
+        return self.playing and self._process_is_alive()
+
+    def _process_is_alive(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
+    def _launch_process(self) -> None:
+        if self._process_is_alive():
+            return
+        self.process = subprocess.Popen(
+            [
+                sys.executable,
+                str(self.script_path),
+                "--video",
+                str(self.video_path),
+                "--width",
+                str(PLAYER_WINDOW_WIDTH),
+                "--height",
+                str(PLAYER_WINDOW_HEIGHT),
+                "--x",
+                str(PLAYER_WINDOW_X),
+                "--y",
+                str(PLAYER_WINDOW_Y),
+                "--title",
+                WINDOW_NAME,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    def start(self) -> None:
+        self.playing = True
+        self._launch_process()
+
+    def update(self) -> None:
+        if self.playing and not self._process_is_alive():
+            self.playing = False
+            self.process = None
+
+    def stop(self) -> None:
+        self.playing = False
+        if not self._process_is_alive():
+            self.process = None
+            return
+
+        process = self.process
+        self.process = None
+        try:
+            if platform.system() == "Windows":
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            else:
+                os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            if platform.system() != "Windows":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def shutdown(self) -> None:
+        self.stop()
+
+
+def build_video_player(video_path: Path) -> Any:
+    if PYTHON_PLAYER_SCRIPT_PATH.exists():
+        try:
+            return PythonFFPyPlayerProcessPlayer(video_path, ensure_python_player_script())
+        except Exception as exc:
+            print(f"Lecteur Python interne indisponible, fallback navigateur: {exc}")
+
+    browser_command = find_browser_command()
+    player_html = ensure_video_player_html()
+    return ControlledVideoPlayer(video_path, browser_command, player_html)
+
+
 def read_and_process_frame(
     camera: cv2.VideoCapture,
     face_landmarker: Any,
@@ -2156,8 +2257,6 @@ def main() -> int:
     try:
         video_path = ensure_video_downloaded()
         model_path = ensure_face_landmarker_model()
-        player_command = find_browser_command()
-        player_html = ensure_video_player_html()
         saved_calibration_profile = load_calibration_profile()
     except Exception as exc:
         print(f"Erreur pendant la preparation des ressources: {exc}")
@@ -2183,7 +2282,14 @@ def main() -> int:
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, CAMERA_WINDOW_WIDTH, CAMERA_WINDOW_HEIGHT)
-    player = ControlledVideoPlayer(video_path, player_command, player_html)
+    try:
+        player = build_video_player(video_path)
+    except Exception as exc:
+        print(f"Impossible d'initialiser le lecteur video: {exc}")
+        camera.release()
+        face_landmarker.close()
+        cv2.destroyAllWindows()
+        return 1
     calibration_choice = prompt_for_calibration(
         camera,
         face_landmarker,
@@ -2267,8 +2373,7 @@ def main() -> int:
                     print(f"Impossible de lancer la video: {exc}")
                     break
 
-            if player.is_active:
-                player.update()
+            player.update()
 
             draw_status_overlay(
                 frame=frame,

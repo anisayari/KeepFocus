@@ -3,3 +3,5 @@ mediapipe
 numpy
 pytube
 pytubefix
+ffpyplayer
+Pillow
