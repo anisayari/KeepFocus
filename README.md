@@ -2,9 +2,11 @@
 
 Petit outil macOS qui surveille ton regard avec la webcam:
 
-- si tu regardes l'ecran, la video se met en pause ;
-- si tu detournes le regard, la video se lance tout de suite avec le son ;
-- la calibration peut parler sur Mac pour te dire quand changer de cible.
+- si tu regardes l'ecran, la video se met en pause et se cache ;
+- si tu regardes le telephone, la video reste cachee ;
+- si tu detournes vraiment le regard, la video passe au premier plan et se lance avec le son ;
+- la calibration peut parler sur Mac pour te dire quand changer de cible ;
+- pendant la calibration, un score de stabilite s'affiche et une verification finale donne un score + un check.
 
 ## Lancer sur Mac
 
@@ -40,4 +42,5 @@ Le script:
 
 - Chrome est prefere sur Mac pour le player.
 - Le profil de calibration est sauve dans `attention_calibration.json`.
-- La fenetre video reste synchronisee en play/pause selon ton regard.
+- La fenetre video passe au premier plan quand l'etat devient `detourne`.
+- Sur Mac, elle est cachee quand l'etat redevient `ecran` ou `telephone`.

@@ -56,6 +56,11 @@ CALIBRATION_REPETITIONS = 3
 CALIBRATION_PREP_SECONDS = 2.0
 CALIBRATION_CAPTURE_SECONDS = 2.5
 CALIBRATION_MIN_SAMPLES = 12
+CALIBRATION_MIN_STABILITY_SAMPLES = 5
+VALIDATION_PREP_SECONDS = 1.2
+VALIDATION_CAPTURE_SECONDS = 1.6
+VALIDATION_MIN_SAMPLES = 8
+VALIDATION_PASS_SCORE = 80.0
 CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y")
 CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08], dtype=np.float64)
 CALIBRATION_FEATURE_WEIGHTS = np.array([1.0, 1.0, 0.8, 1.25, 1.25], dtype=np.float64)
@@ -179,6 +184,15 @@ def announce_calibration_change(message: str) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
+def browser_app_name(browser_command: list[str]) -> str | None:
+    executable_name = Path(browser_command[0]).name.lower()
+    if "chrome" in executable_name:
+        return "Google Chrome"
+    if "edge" in executable_name:
+        return "Microsoft Edge"
+    return None
+
+
 def pick_free_port() -> int:
     import socket
 
@@ -198,6 +212,17 @@ def compute_profile_distance(
 ) -> float:
     normalized = ((vector - center) / scale) * CALIBRATION_FEATURE_WEIGHTS
     return float(np.linalg.norm(normalized))
+
+
+def compute_step_stability_score(samples: list[dict[str, float]]) -> float | None:
+    if len(samples) < CALIBRATION_MIN_STABILITY_SAMPLES:
+        return None
+
+    vectors = np.vstack([metrics_to_vector(sample) for sample in samples])
+    spreads = vectors.std(axis=0)
+    normalized = (spreads / CALIBRATION_SCALE_FLOOR) * CALIBRATION_FEATURE_WEIGHTS
+    raw_score = float(np.linalg.norm(normalized))
+    return float(np.clip(100.0 - raw_score * 26.0, 0.0, 100.0))
 
 
 def build_calibration_profile(
@@ -644,6 +669,7 @@ def classify_attention(
         looking_at_screen = head_centered and gaze_centered
         enriched_metrics["screen_score"] = 1.0 if looking_at_screen else -1.0
         enriched_metrics["classification_mode"] = 0.0
+        enriched_metrics["attention_state"] = "screen" if looking_at_screen else "away"
         return looking_at_screen, enriched_metrics
 
     vector = metrics_to_vector(metrics)
@@ -655,15 +681,24 @@ def classify_attention(
     screen_distance = compute_profile_distance(vector, screen_center, screen_scale)
     phone_distance = compute_profile_distance(vector, phone_center, phone_scale)
     screen_score = phone_distance - screen_distance
+    phone_score = screen_distance - phone_distance
     looking_at_screen = (
         screen_score >= float(calibration_profile["decision_boundary"])
         and screen_distance <= float(calibration_profile["screen_distance_limit"])
     )
+    looking_at_phone = (
+        not looking_at_screen
+        and phone_distance <= float(calibration_profile["phone_distance_limit"])
+        and phone_distance < screen_distance
+    )
+    attention_state = "screen" if looking_at_screen else "phone" if looking_at_phone else "away"
 
     enriched_metrics["screen_distance"] = screen_distance
     enriched_metrics["phone_distance"] = phone_distance
     enriched_metrics["screen_score"] = screen_score
+    enriched_metrics["phone_score"] = phone_score
     enriched_metrics["decision_boundary"] = float(calibration_profile["decision_boundary"])
+    enriched_metrics["attention_state"] = attention_state
     enriched_metrics["classification_mode"] = 1.0
     return looking_at_screen, enriched_metrics
 
@@ -677,6 +712,7 @@ class ControlledVideoPlayer:
     ) -> None:
         self.video_path = video_path
         self.browser_command = browser_command
+        self.browser_app_name = browser_app_name(browser_command)
         self.player_html = player_html
         self.port = pick_free_port()
         self.process: subprocess.Popen[bytes] | None = None
@@ -728,6 +764,37 @@ class ControlledVideoPlayer:
     def _window_is_open(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def _mac_activate(self) -> None:
+        if platform.system() != "Darwin" or self.browser_app_name is None:
+            return
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{self.browser_app_name}" to activate'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+    def _mac_hide(self) -> None:
+        if platform.system() != "Darwin" or self.browser_app_name is None:
+            return
+        subprocess.run(
+            ["osascript", "-e", f'tell application "{self.browser_app_name}" to hide'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+    def _activate_window(self) -> None:
+        if platform.system() != "Darwin":
+            return
+
+        def worker() -> None:
+            self._mac_activate()
+            time.sleep(0.35)
+            self._mac_activate()
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _ensure_window(self) -> None:
         if self._window_is_open():
             return
@@ -758,6 +825,7 @@ class ControlledVideoPlayer:
             with self.state_lock:
                 self.playing = False
             raise
+        self._activate_window()
 
     def update(self) -> None:
         if self.is_active:
@@ -766,6 +834,7 @@ class ControlledVideoPlayer:
     def stop(self) -> None:
         with self.state_lock:
             self.playing = False
+        self._mac_hide()
 
     def shutdown(self) -> None:
         self.stop()
@@ -858,6 +927,138 @@ def prompt_for_calibration(
             return "quit"
 
 
+def run_validation_phase(
+    camera: cv2.VideoCapture,
+    face_landmarker: Any,
+    calibration_profile: dict[str, Any],
+    *,
+    target: str,
+    message: str,
+) -> dict[str, float] | None:
+    announce_calibration_change(
+        "Verification ecran" if target == "screen" else "Verification telephone"
+    )
+
+    prep_end = time.monotonic() + VALIDATION_PREP_SECONDS
+    while time.monotonic() < prep_end:
+        ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
+        if not ok or frame is None:
+            return None
+        if landmarks is not None:
+            draw_face_visuals(frame, landmarks, color_override=(255, 190, 0))
+        draw_text_block(
+            frame,
+            [
+                "Verification calibration",
+                message,
+                f"Debut dans {prep_end - time.monotonic():.1f}s",
+                "On verifie que le profil reconnait bien la cible",
+            ],
+            color=(255, 255, 255),
+        )
+        cv2.imshow(WINDOW_NAME, frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q"), ord("Q")):
+            return None
+
+    total_samples = 0
+    matched_samples = 0
+    step_samples: list[dict[str, float]] = []
+    capture_end = time.monotonic() + VALIDATION_CAPTURE_SECONDS
+    while time.monotonic() < capture_end:
+        ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
+        if not ok or frame is None:
+            return None
+        if landmarks is not None:
+            draw_face_visuals(frame, landmarks, color_override=(255, 190, 0))
+            metrics = extract_attention_metrics(landmarks, frame.shape[1], frame.shape[0])
+            _, enriched_metrics = classify_attention(metrics, calibration_profile)
+            predicted_state = str(enriched_metrics.get("attention_state", "away"))
+            step_samples.append(metrics)
+            total_samples += 1
+            if predicted_state == target:
+                matched_samples += 1
+
+        live_stability = compute_step_stability_score(step_samples)
+        live_score_text = (
+            f"Score live: {live_stability:.0f}/100"
+            if live_stability is not None
+            else "Score live: ..."
+        )
+        draw_text_block(
+            frame,
+            [
+                "Verification calibration",
+                message,
+                f"Reconnu correctement: {matched_samples}/{max(total_samples, 1)}",
+                live_score_text,
+            ],
+            color=(255, 255, 255),
+        )
+        cv2.imshow(WINDOW_NAME, frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q"), ord("Q")):
+            return None
+
+    if total_samples == 0:
+        return {
+            "accuracy": 0.0,
+            "matched": 0.0,
+            "total": 0.0,
+            "stability_score": 0.0,
+        }
+
+    return {
+        "accuracy": matched_samples / total_samples,
+        "matched": float(matched_samples),
+        "total": float(total_samples),
+        "stability_score": float(compute_step_stability_score(step_samples) or 0.0),
+    }
+
+
+def run_calibration_validation(
+    camera: cv2.VideoCapture,
+    face_landmarker: Any,
+    calibration_profile: dict[str, Any],
+) -> dict[str, float] | None:
+    screen_result = run_validation_phase(
+        camera,
+        face_landmarker,
+        calibration_profile,
+        target="screen",
+        message="Regarde l'ecran",
+    )
+    if screen_result is None:
+        return None
+
+    phone_result = run_validation_phase(
+        camera,
+        face_landmarker,
+        calibration_profile,
+        target="phone",
+        message="Regarde ton telephone",
+    )
+    if phone_result is None:
+        return None
+
+    validation_score = ((screen_result["accuracy"] + phone_result["accuracy"]) / 2.0) * 100.0
+    validation_passed = (
+        screen_result["total"] >= VALIDATION_MIN_SAMPLES
+        and phone_result["total"] >= VALIDATION_MIN_SAMPLES
+        and validation_score >= VALIDATION_PASS_SCORE
+        and screen_result["accuracy"] >= 0.7
+        and phone_result["accuracy"] >= 0.7
+    )
+    return {
+        "validation_score": validation_score,
+        "validation_passed": 1.0 if validation_passed else 0.0,
+        "screen_validation_accuracy": screen_result["accuracy"],
+        "phone_validation_accuracy": phone_result["accuracy"],
+        "screen_validation_total": screen_result["total"],
+        "phone_validation_total": phone_result["total"],
+    }
+
+
 def run_calibration(
     camera: cv2.VideoCapture,
     face_landmarker: Any,
@@ -922,6 +1123,12 @@ def run_calibration(
                     )
 
                 remaining = capture_end - time.monotonic()
+                live_stability = compute_step_stability_score(step_samples)
+                live_score_text = (
+                    f"Score stabilite: {live_stability:.0f}/100"
+                    if live_stability is not None
+                    else "Score stabilite: ..."
+                )
                 draw_text_block(
                     frame,
                     [
@@ -929,6 +1136,7 @@ def run_calibration(
                         message,
                         f"Temps restant {remaining:.1f}s",
                         f"Echantillons valides: {len(step_samples)}",
+                        live_score_text,
                     ],
                     color=(255, 255, 255),
                 )
@@ -966,23 +1174,42 @@ def run_calibration(
                     return None
 
     profile = build_calibration_profile(screen_samples, phone_samples)
+    validation = run_calibration_validation(camera, face_landmarker, profile)
+    if validation is not None:
+        profile.update(
+            {
+                "validation_score": validation["validation_score"],
+                "validation_passed": bool(validation["validation_passed"]),
+                "screen_validation_accuracy": validation["screen_validation_accuracy"],
+                "phone_validation_accuracy": validation["phone_validation_accuracy"],
+                "screen_validation_total": int(validation["screen_validation_total"]),
+                "phone_validation_total": int(validation["phone_validation_total"]),
+            }
+        )
     save_calibration_profile(profile)
 
-    success_end = time.monotonic() + 1.8
+    success_end = time.monotonic() + 2.4
     while time.monotonic() < success_end:
         ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
         if not ok or frame is None:
             return profile
         if landmarks is not None:
             draw_face_visuals(frame, landmarks, color_override=(0, 220, 255))
+        validation_score = float(profile.get("validation_score", 0.0))
+        validation_status = (
+            "CHECK OK"
+            if bool(profile.get("validation_passed"))
+            else "CHECK A REFAIRE"
+        )
         draw_text_block(
             frame,
             [
                 "Calibration terminee",
                 "Le profil a ete enregistre",
-                "La detection utilise maintenant tes mesures perso",
+                f"Score verification: {validation_score:.0f}/100",
+                validation_status,
             ],
-            color=(0, 220, 120),
+            color=(0, 220, 120) if bool(profile.get("validation_passed")) else (0, 190, 255),
         )
         cv2.imshow(WINDOW_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
@@ -1064,7 +1291,7 @@ def draw_face_visuals(
 
 def draw_status_overlay(
     frame: np.ndarray,
-    looking_at_screen: bool,
+    attention_state: str,
     face_found: bool,
     away_seconds: float,
     metrics: dict[str, float],
@@ -1074,9 +1301,12 @@ def draw_status_overlay(
     if not face_found:
         status = "VISAGE NON DETECTE"
         color = (0, 110, 255)
-    elif looking_at_screen:
+    elif attention_state == "screen":
         status = "ECRAN"
         color = (0, 180, 0)
+    elif attention_state == "phone":
+        status = "TELEPHONE"
+        color = (0, 165, 255)
     else:
         status = "REGARD DETOURNE"
         color = (0, 0, 255)
@@ -1172,6 +1402,11 @@ def draw_status_overlay(
 
 def calibration_mode_text(calibration_profile: dict[str, Any] | None) -> str:
     if calibration_profile is not None:
+        validation_score = calibration_profile.get("validation_score")
+        validation_passed = calibration_profile.get("validation_passed")
+        if validation_score is not None:
+            prefix = "CALIB OK" if validation_passed else "CALIB CHECK"
+            return f"{prefix} {float(validation_score):.0f}"
         return "CALIB PERSO"
     return "SEUILS PAR DEFAUT"
 
@@ -1238,6 +1473,7 @@ def main() -> int:
 
             face_found = landmarks is not None
             looking_at_screen = False
+            attention_state = "away"
             metrics: dict[str, float] = {}
 
             if face_found:
@@ -1246,16 +1482,26 @@ def main() -> int:
                     metrics,
                     calibration_profile,
                 )
+                attention_state = str(
+                    metrics.get(
+                        "attention_state",
+                        "screen" if looking_at_screen else "away",
+                    )
+                )
                 draw_face_visuals(frame, landmarks, looking_at_screen)
 
             now = time.monotonic()
-            if looking_at_screen:
+            if attention_state in {"screen", "phone"}:
                 last_looking_time = now
                 if player.is_active:
                     player.stop()
 
             away_seconds = max(0.0, now - last_looking_time)
-            if away_seconds >= NOT_LOOKING_TRIGGER_SECONDS and not player.is_active:
+            if (
+                attention_state == "away"
+                and away_seconds >= NOT_LOOKING_TRIGGER_SECONDS
+                and not player.is_active
+            ):
                 try:
                     player.start()
                 except Exception as exc:
@@ -1267,7 +1513,7 @@ def main() -> int:
 
             draw_status_overlay(
                 frame=frame,
-                looking_at_screen=looking_at_screen,
+                attention_state=attention_state,
                 face_found=face_found,
                 away_seconds=away_seconds,
                 metrics=metrics,
