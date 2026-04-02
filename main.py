@@ -46,7 +46,8 @@ GAZE_VERTICAL_MAX = 0.78
 FACE_BOX_PADDING = 20
 EYE_BOX_PADDING = 12
 POINT_RADIUS = 1
-IRIS_POINT_RADIUS = 2
+IRIS_POINT_RADIUS = 1
+FACE_POINT_DRAW_STRIDE = 16
 CAMERA_CAPTURE_WIDTH = 1280
 CAMERA_CAPTURE_HEIGHT = 720
 CAMERA_WINDOW_WIDTH = 1440
@@ -1321,12 +1322,16 @@ class ControlledVideoPlayer:
         self.browser_app_name = browser_app_name(browser_command)
         self.player_html = player_html
         self.port = pick_free_port()
+        self.player_url = f"http://127.0.0.1:{self.port}/{self.player_html.name}"
         self.process: subprocess.Popen[bytes] | None = None
         self.server: ThreadingHTTPServer | None = None
         self.server_thread: threading.Thread | None = None
         self.state_lock = threading.Lock()
         self.playing = False
         self.play_request_id = 0
+        self.last_activate_time = 0.0
+        self.last_window_probe_time = 0.0
+        self.macos_window_known_open = False
 
     @property
     def is_active(self) -> bool:
@@ -1354,7 +1359,10 @@ class ControlledVideoPlayer:
                     self.send_header("Content-Length", str(len(payload)))
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
-                    self.wfile.write(payload)
+                    try:
+                        self.wfile.write(payload)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
                     return
                 try:
                     super().do_GET()
@@ -1377,6 +1385,13 @@ class ControlledVideoPlayer:
         self.server_thread.start()
 
     def _window_is_open(self) -> bool:
+        if platform.system() == "Darwin" and self.browser_app_name is not None:
+            now = time.monotonic()
+            if self.macos_window_known_open and now - self.last_window_probe_time < 1.5:
+                return True
+            self.macos_window_known_open = self._mac_player_window_exists()
+            self.last_window_probe_time = now
+            return self.macos_window_known_open
         return self.process is not None and self.process.poll() is None
 
     def _mac_activate(self) -> None:
@@ -1399,9 +1414,61 @@ class ControlledVideoPlayer:
             check=False,
         )
 
-    def _activate_window(self) -> None:
+    def _mac_player_window_exists(self) -> bool:
+        if platform.system() != "Darwin" or self.browser_app_name is None:
+            return False
+        script = f'''
+tell application "{self.browser_app_name}"
+    repeat with currentWindow in windows
+        try
+            set currentUrl to URL of active tab of currentWindow
+            if currentUrl starts with "{self.player_url}" then
+                return "1"
+            end if
+        end try
+    end repeat
+    return "0"
+end tell
+'''
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "1"
+
+    def _mac_close_player_windows(self) -> None:
+        if platform.system() != "Darwin" or self.browser_app_name is None:
+            return
+        script = f'''
+tell application "{self.browser_app_name}"
+    repeat with currentWindow in (every window)
+        try
+            set currentUrl to URL of active tab of currentWindow
+            if currentUrl starts with "{self.player_url}" then
+                close currentWindow
+            end if
+        end try
+    end repeat
+end tell
+'''
+        subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        self.macos_window_known_open = False
+        self.last_window_probe_time = time.monotonic()
+
+    def _activate_window(self, *, force: bool = False) -> None:
         if platform.system() != "Darwin":
             return
+        now = time.monotonic()
+        if not force and now - self.last_activate_time < 0.75:
+            return
+        self.last_activate_time = now
 
         def worker() -> None:
             self._mac_activate()
@@ -1425,12 +1492,15 @@ class ControlledVideoPlayer:
                 "--no-first-run",
                 f"--window-size={PLAYER_WINDOW_WIDTH},{PLAYER_WINDOW_HEIGHT}",
                 f"--window-position={PLAYER_WINDOW_X},{PLAYER_WINDOW_Y}",
-                f"--app=http://127.0.0.1:{self.port}/{self.player_html.name}",
+                f"--app={self.player_url}",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        if platform.system() == "Darwin":
+            self.macos_window_known_open = True
+            self.last_window_probe_time = time.monotonic()
 
     def start(self) -> None:
         with self.state_lock:
@@ -1442,19 +1512,25 @@ class ControlledVideoPlayer:
             with self.state_lock:
                 self.playing = False
             raise
-        self._activate_window()
+        self._activate_window(force=True)
 
     def update(self) -> None:
         if self.is_active:
             self._ensure_window()
+            self._activate_window()
 
     def stop(self) -> None:
         with self.state_lock:
             self.playing = False
-        self._mac_hide()
+        if platform.system() == "Darwin":
+            self._mac_close_player_windows()
+        else:
+            self._mac_hide()
 
     def shutdown(self) -> None:
         self.stop()
+        if platform.system() == "Darwin":
+            self._mac_close_player_windows()
         if self.process is not None and self.process.poll() is None:
             if platform.system() == "Windows":
                 subprocess.run(
@@ -1484,6 +1560,9 @@ class ControlledVideoPlayer:
         if self.server_thread is not None:
             self.server_thread.join(timeout=3)
             self.server_thread = None
+        self.last_activate_time = 0.0
+        self.last_window_probe_time = 0.0
+        self.macos_window_known_open = False
 
 
 def read_and_process_frame(
@@ -1923,7 +2002,8 @@ def draw_face_visuals(
         box_color = (0, 190, 0) if looking_at_screen else (0, 0, 255)
         point_color = (80, 255, 80) if looking_at_screen else (80, 80, 255)
 
-    for x, y in face_points:
+    sparse_face_points = face_points[::FACE_POINT_DRAW_STRIDE]
+    for x, y in sparse_face_points:
         cv2.circle(frame, (x, y), POINT_RADIUS, point_color, -1, lineType=cv2.LINE_AA)
 
     for iris_indices in (LEFT_IRIS, RIGHT_IRIS):

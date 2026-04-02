@@ -158,8 +158,10 @@
     let playbackRetry = null;
 
     player.src = "/videos/youtube_trigger_video.mp4";
+    player.preload = "auto";
     player.volume = 1.0;
     player.autoplay = true;
+    player.load();
 
     function reflectUi(isPlaying) {
       document.body.classList.toggle("is-playing", isPlaying);
@@ -186,7 +188,7 @@
         return;
       }
 
-      if (player.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      if (player.readyState < HTMLMediaElement.HAVE_METADATA) {
         scheduleRetry();
         return;
       }
@@ -217,8 +219,9 @@
 
         if (desiredPlaying && playRequestId !== lastPlayRequestId) {
           lastPlayRequestId = playRequestId;
-          player.currentTime = 0;
-          player.load();
+          if (player.readyState >= HTMLMediaElement.HAVE_METADATA) {
+            player.currentTime = 0;
+          }
         }
 
         if (desiredPlaying) {
@@ -250,6 +253,15 @@
       if (!desiredPlaying) {
         reflectUi(false);
       }
+    });
+
+    player.addEventListener("ended", () => {
+      if (!desiredPlaying) {
+        reflectUi(false);
+        return;
+      }
+      player.currentTime = 0;
+      ensurePlayback();
     });
 
     setInterval(syncState, 80);
