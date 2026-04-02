@@ -1,47 +1,48 @@
 # Gaze Focus TamTam
 
-Petit outil macOS qui surveille ton regard avec la webcam:
+macOS tool that tracks your gaze with the webcam:
 
-- si tu regardes l'ecran, la video se met en pause et se cache ;
-- si tu regardes le telephone, la video reste cachee ;
-- si tu detournes vraiment le regard, la video passe au premier plan et se lance avec le son ;
-- la calibration peut parler sur Mac pour te dire quand changer de cible ;
-- pendant la calibration, un score de stabilite s'affiche et une verification finale donne un score + un check ;
-- juste apres la calibration, un panneau montre les moyennes `ecran` et `telephone` utilisees par le systeme.
+- when you look at the screen, the video pauses and stays hidden
+- when you look at your phone, the video stays hidden
+- when you genuinely look away, the video comes to the foreground and starts with sound
+- calibration can play a sound and speak on macOS to tell you when to switch target
+- during calibration, a stability score is shown live
+- after calibration, a verification pass gives you a final score and a clear check result
+- right after calibration, a panel shows the average `screen` and `phone` values used by the classifier
 
-## Lancer sur Mac
+## Run on macOS
 
-Double-clique sur [run_mac.command](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/run_mac.command) ou lance:
+Double-click [run_mac.command](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/run_mac.command) or run:
 
 ```bash
 ./run_mac.command
 ```
 
-Le script:
+The script:
 
-- cree `.venv` si besoin ;
-- installe les dependances ;
-- ouvre la webcam en grand ;
-- charge la video locale ;
-- te propose une calibration au demarrage.
+- creates `.venv` if needed
+- installs dependencies
+- opens the webcam in a larger window
+- loads the local video
+- asks whether you want to calibrate at startup
 
-## Raccourcis
+## Shortcuts
 
-- `C` au demarrage: lancer une calibration
-- `S` / `Entree` / `Espace`: continuer avec la calibration sauvee ou sans calibration
-- `C` pendant le suivi: recalibrer
-- `Q` ou `ESC`: quitter
+- `C` at startup: start calibration
+- `S` / `Enter` / `Space`: continue with the saved calibration or without calibration
+- `C` during tracking: recalibrate
+- `Q` or `ESC`: quit
 
-## Fichiers utiles
+## Useful Files
 
-- [main.py](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/main.py): logique webcam, detection du regard, calibration, player
-- [video_player.html](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/video_player.html): fenetre video
-- [videos/youtube_trigger_video.mp4](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/videos/youtube_trigger_video.mp4): clip joue quand tu regardes ailleurs
-- [models/face_landmarker.task](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/models/face_landmarker.task): modele MediaPipe
+- [main.py](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/main.py): webcam logic, gaze detection, calibration, player control
+- [video_player.html](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/video_player.html): video window
+- [videos/youtube_trigger_video.mp4](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/videos/youtube_trigger_video.mp4): video clip played when you look away
+- [models/face_landmarker.task](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/models/face_landmarker.task): MediaPipe model
 
 ## Notes
 
-- Chrome est prefere sur Mac pour le player.
-- Le profil de calibration est sauve dans `attention_calibration.json`.
-- La fenetre video passe au premier plan quand l'etat devient `detourne`.
-- Sur Mac, elle est cachee quand l'etat redevient `ecran` ou `telephone`.
+- Chrome is preferred on macOS for the video player.
+- The calibration profile is saved in `attention_calibration.json`.
+- The video window comes to the front when the state becomes `away`.
+- On macOS, the video window is hidden again when the state returns to `screen` or `phone`.
