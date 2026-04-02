@@ -71,19 +71,38 @@ STATE_CONFIRM_FRAMES_SCREEN = 3
 STATE_CONFIRM_FRAMES_PHONE = 3
 STATE_CONFIRM_FRAMES_AWAY = 7
 SCREEN_OFFSET_ADAPT_ALPHA = 0.05
-SCREEN_OFFSET_MAX = np.array([14.0, 14.0, 10.0, 0.18, 0.18, 0.05], dtype=np.float64)
 SCREEN_ADAPT_MARGIN = 0.7
 SCREEN_HOLD_MARGIN = -1.15
 SCREEN_HOLD_DISTANCE_MULTIPLIER = 1.22
-CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y", "face_scale")
-CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08, 0.018], dtype=np.float64)
-CALIBRATION_FEATURE_WEIGHTS = np.array([1.0, 1.0, 0.8, 1.25, 1.25, 0.7], dtype=np.float64)
+BASE_CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y", "face_scale")
+MESH_SIGNATURE_DIM = 12
+MESH_FEATURE_KEYS = tuple(f"mesh_{index}" for index in range(MESH_SIGNATURE_DIM))
+CALIBRATION_FEATURE_KEYS = BASE_CALIBRATION_FEATURE_KEYS + MESH_FEATURE_KEYS
+BASE_FEATURE_COUNT = len(BASE_CALIBRATION_FEATURE_KEYS)
+SCREEN_OFFSET_MAX = np.array([14.0, 14.0, 10.0, 0.18, 0.18, 0.05], dtype=np.float64)
+CALIBRATION_SCALE_FLOOR = np.array(
+    [8.0, 8.0, 6.0, 0.08, 0.08, 0.018] + [0.16] * MESH_SIGNATURE_DIM,
+    dtype=np.float64,
+)
+CALIBRATION_FEATURE_WEIGHTS = np.array(
+    [1.0, 1.0, 0.8, 1.25, 1.25, 0.7] + [0.55] * MESH_SIGNATURE_DIM,
+    dtype=np.float64,
+)
+MESH_POINT_DIM = 3
+MESH_SIGNATURE_SEED = 41
+MESH_SIGNATURE_POINT_COUNT = 478
 
 LEFT_IRIS = (468, 469, 470, 471, 472)
 RIGHT_IRIS = (473, 474, 475, 476, 477)
 LEFT_EYE_BOX = (33, 133, 159, 145, 160, 144, 158, 153, 157, 173)
 RIGHT_EYE_BOX = (263, 362, 386, 374, 387, 373, 385, 380, 384, 398)
 ANNOUNCEMENT_LOCK = threading.Lock()
+MESH_PROJECTION_MATRIX = (
+    np.random.default_rng(MESH_SIGNATURE_SEED).normal(
+        size=(MESH_SIGNATURE_POINT_COUNT * MESH_POINT_DIM, MESH_SIGNATURE_DIM)
+    )
+    / np.sqrt(MESH_SIGNATURE_POINT_COUNT * MESH_POINT_DIM)
+)
 
 
 def ensure_video_downloaded() -> Path:
@@ -286,16 +305,21 @@ class AttentionStabilizer:
 class ScreenOffsetAdaptor:
     def __init__(self, calibration_profile: dict[str, Any] | None) -> None:
         self.base_screen_center = (
-            np.array(calibration_profile["screen_center"], dtype=np.float64)
+            np.array(calibration_profile["screen_center"], dtype=np.float64)[:BASE_FEATURE_COUNT]
             if calibration_profile is not None
             else None
         )
-        self.offset = np.zeros(len(CALIBRATION_FEATURE_KEYS), dtype=np.float64)
+        self.offset = np.zeros(BASE_FEATURE_COUNT, dtype=np.float64)
 
     def current_offset(self) -> np.ndarray | None:
         if self.base_screen_center is None:
             return None
-        return self.offset
+        return np.concatenate(
+            (
+                self.offset,
+                np.zeros(len(CALIBRATION_FEATURE_KEYS) - BASE_FEATURE_COUNT, dtype=np.float64),
+            )
+        )
 
     def maybe_update(
         self,
@@ -309,7 +333,7 @@ class ScreenOffsetAdaptor:
         if classification.get("screen_margin", -999.0) < SCREEN_ADAPT_MARGIN:
             return
 
-        observed = metrics_to_vector(smoothed_metrics)
+        observed = metrics_to_vector(smoothed_metrics)[:BASE_FEATURE_COUNT]
         delta = observed - self.base_screen_center
         delta = np.clip(delta, -SCREEN_OFFSET_MAX, SCREEN_OFFSET_MAX)
         self.offset = (
@@ -362,7 +386,7 @@ def build_calibration_profile(
     phone_distance_limit = float(max(np.percentile(phone_self_distances, 92) + 0.65, 2.2))
 
     return {
-        "version": 2,
+        "version": 3,
         "screen_center": screen_center.tolist(),
         "screen_scale": screen_scale.tolist(),
         "phone_center": phone_center.tolist(),
@@ -393,7 +417,7 @@ def load_calibration_profile() -> dict[str, Any] | None:
     }
     if not required_keys.issubset(profile):
         return None
-    if int(profile.get("version", 0)) < 2:
+    if int(profile.get("version", 0)) < 3:
         return None
     expected_length = len(CALIBRATION_FEATURE_KEYS)
     for key in ("screen_center", "screen_scale", "phone_center", "phone_scale"):
@@ -583,10 +607,10 @@ def draw_calibration_summary_panel(
     bar_width = bar_right - bar_left
 
     for feature_name, screen_value, phone_value in zip(
-        CALIBRATION_FEATURE_KEYS,
-        screen_center,
-        phone_center,
-    ):
+        BASE_CALIBRATION_FEATURE_KEYS,
+        screen_center[:BASE_FEATURE_COUNT],
+        phone_center[:BASE_FEATURE_COUNT],
+        ):
         low, high = calibration_feature_bounds(feature_name)
         ratio_screen = float(np.clip((screen_value - low) / (high - low), 0.0, 1.0))
         ratio_phone = float(np.clip((phone_value - low) / (high - low), 0.0, 1.0))
@@ -649,6 +673,7 @@ def draw_calibration_summary_panel(
         f"Score seuil: {float(calibration_profile['decision_boundary']):+.2f}",
         f"Limite ecran: {float(calibration_profile['screen_distance_limit']):.2f}",
         f"Limite tel: {float(calibration_profile['phone_distance_limit']):.2f}",
+        "Mesh signature: all face points active",
         "Vert = ecran, orange = telephone",
     ]
     footer_y = y2 - 64
@@ -1013,6 +1038,48 @@ def compute_face_scale(
     return float((normalized_eye_distance * 0.55) + (normalized_face_height * 0.45))
 
 
+def compute_mesh_signature(
+    landmarks: list[Any],
+    width: int,
+    height: int,
+) -> np.ndarray:
+    left_eye_center = average_point(landmarks, LEFT_EYE_BOX, width, height)
+    right_eye_center = average_point(landmarks, RIGHT_EYE_BOX, width, height)
+    eye_midpoint = (left_eye_center + right_eye_center) / 2.0
+    eye_delta = right_eye_center - left_eye_center
+    eye_distance = float(np.linalg.norm(eye_delta))
+    if eye_distance < 1e-6:
+        eye_distance = 1.0
+
+    angle = -float(np.arctan2(eye_delta[1], eye_delta[0]))
+    cos_angle = float(np.cos(angle))
+    sin_angle = float(np.sin(angle))
+    rotation = np.array(
+        [[cos_angle, -sin_angle], [sin_angle, cos_angle]],
+        dtype=np.float64,
+    )
+
+    mesh_components: list[float] = []
+    for landmark in landmarks[:MESH_SIGNATURE_POINT_COUNT]:
+        point_xy = np.array((landmark.x * width, landmark.y * height), dtype=np.float64)
+        normalized_xy = (rotation @ (point_xy - eye_midpoint)) / eye_distance
+        normalized_z = float(landmark.z) / eye_distance
+        mesh_components.extend(
+            [
+                float(normalized_xy[0]),
+                float(normalized_xy[1]),
+                normalized_z,
+            ]
+        )
+
+    expected_length = MESH_SIGNATURE_POINT_COUNT * MESH_POINT_DIM
+    if len(mesh_components) < expected_length:
+        mesh_components.extend([0.0] * (expected_length - len(mesh_components)))
+
+    mesh_vector = np.array(mesh_components, dtype=np.float64)
+    return mesh_vector @ MESH_PROJECTION_MATRIX
+
+
 def estimate_head_pose(
     landmarks: list[Any],
     width: int,
@@ -1082,11 +1149,12 @@ def extract_attention_metrics(
     yaw, pitch, roll = estimate_head_pose(landmarks, width, height)
     left_h, right_h, left_v, right_v = compute_iris_ratios(landmarks, width, height)
     face_scale = compute_face_scale(landmarks, width, height)
+    mesh_signature = compute_mesh_signature(landmarks, width, height)
 
     horizontal_ratio = (left_h + right_h) / 2
     vertical_ratio = (left_v + right_v) / 2
 
-    return {
+    metrics = {
         "yaw": yaw,
         "pitch": pitch,
         "roll": roll,
@@ -1094,6 +1162,9 @@ def extract_attention_metrics(
         "gaze_y": vertical_ratio,
         "face_scale": face_scale,
     }
+    for feature_name, value in zip(MESH_FEATURE_KEYS, mesh_signature, strict=True):
+        metrics[feature_name] = float(value)
+    return metrics
 
 
 def classify_attention(

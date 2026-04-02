@@ -12,6 +12,7 @@ Cross-platform tool for macOS and Windows that tracks your gaze with the webcam 
 - calibration now captures more samples for each target 📊
 - gaze detection is smoothed over time and stabilized across several frames for better robustness 🧱
 - calibration now also models face distance and is more tolerant to small screen angle changes 📏
+- calibration also uses a compressed signature built from the full face mesh, not only gaze coordinates 🕸️
 - during calibration, a stability score is shown live ✅
 - after calibration, a verification pass gives you a final score and a clear check result 🎯
 - right after calibration, one panel shows the average `screen` and `phone` values used by the classifier 📈
