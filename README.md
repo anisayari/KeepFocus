@@ -6,9 +6,12 @@ macOS tool that tracks your gaze with the webcam:
 - when you look at your phone, the video stays hidden
 - when you genuinely look away, the video comes to the foreground and starts with sound
 - calibration can play a sound and speak on macOS to tell you when to switch target
+- after each calibration announcement, there is a short repositioning delay before capture starts
+- calibration now captures more samples for each target
 - during calibration, a stability score is shown live
 - after calibration, a verification pass gives you a final score and a clear check result
-- right after calibration, a panel shows the average `screen` and `phone` values used by the classifier
+- right after calibration, one panel shows the average `screen` and `phone` values used by the classifier
+- a second diagnostics panel shows how well calibration samples separate around the decision boundary
 
 ## Run on macOS
 

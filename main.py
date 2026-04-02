@@ -52,14 +52,15 @@ CAMERA_CAPTURE_HEIGHT = 720
 CAMERA_WINDOW_WIDTH = 1440
 CAMERA_WINDOW_HEIGHT = 920
 HEADER_HEIGHT = 72
-CALIBRATION_REPETITIONS = 3
-CALIBRATION_PREP_SECONDS = 2.0
-CALIBRATION_CAPTURE_SECONDS = 2.5
-CALIBRATION_MIN_SAMPLES = 12
+CALIBRATION_REPETITIONS = 4
+ANNOUNCEMENT_SETTLE_SECONDS = 1.0
+CALIBRATION_PREP_SECONDS = 1.2
+CALIBRATION_CAPTURE_SECONDS = 3.0
+CALIBRATION_MIN_SAMPLES = 18
 CALIBRATION_MIN_STABILITY_SAMPLES = 5
-VALIDATION_PREP_SECONDS = 1.2
-VALIDATION_CAPTURE_SECONDS = 1.6
-VALIDATION_MIN_SAMPLES = 8
+VALIDATION_PREP_SECONDS = 1.0
+VALIDATION_CAPTURE_SECONDS = 2.0
+VALIDATION_MIN_SAMPLES = 10
 VALIDATION_PASS_SCORE = 80.0
 CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y")
 CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08], dtype=np.float64)
@@ -423,15 +424,20 @@ def calibration_feature_label(feature_name: str) -> str:
     return labels.get(feature_name, feature_name)
 
 
-def draw_calibration_summary_panel(
-    frame: np.ndarray,
-    calibration_profile: dict[str, Any],
-) -> None:
+def calibration_summary_panel_rect(frame: np.ndarray) -> tuple[int, int, int, int]:
     panel_width = min(430, max(320, frame.shape[1] // 3))
     x1 = frame.shape[1] - panel_width - 16
     y1 = 96
     x2 = frame.shape[1] - 16
     y2 = frame.shape[0] - 90
+    return x1, y1, x2, y2
+
+
+def draw_calibration_summary_panel(
+    frame: np.ndarray,
+    calibration_profile: dict[str, Any],
+) -> None:
+    x1, y1, x2, y2 = calibration_summary_panel_rect(frame)
 
     overlay = frame.copy()
     cv2.rectangle(overlay, (x1, y1), (x2, y2), (15, 20, 32), -1)
@@ -556,6 +562,172 @@ def draw_calibration_summary_panel(
             lineType=cv2.LINE_AA,
         )
         footer_y += 18
+
+
+def draw_calibration_diagnostics_panel(
+    frame: np.ndarray,
+    diagnostics: dict[str, Any],
+) -> None:
+    summary_x1, summary_y1, _, summary_y2 = calibration_summary_panel_rect(frame)
+    x1 = 16
+    y1 = summary_y1
+    x2 = max(summary_x1 - 16, frame.shape[1] // 2)
+    y2 = summary_y2
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (16, 18, 28), -1)
+    cv2.addWeighted(overlay, 0.90, frame, 0.10, 0.0, frame)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 90, 112), 1)
+
+    cv2.putText(
+        frame,
+        "CLASSIFIER DIAGNOSTICS",
+        (x1 + 16, y1 + 28),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.62,
+        (255, 255, 255),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+
+    fit_score = float(diagnostics["fit_score"])
+    screen_fit = float(diagnostics["screen_fit_accuracy"]) * 100.0
+    phone_fit = float(diagnostics["phone_fit_accuracy"]) * 100.0
+    validation_score = diagnostics.get("validation_score")
+    stats_lines = [
+        f"Calibration fit: {fit_score:.0f}/100",
+        f"Screen fit: {screen_fit:.0f}%   Phone fit: {phone_fit:.0f}%",
+    ]
+    if validation_score is not None:
+        stats_lines.append(f"Validation: {float(validation_score):.0f}/100")
+
+    stats_y = y1 + 54
+    for line in stats_lines:
+        cv2.putText(
+            frame,
+            line,
+            (x1 + 16, stats_y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (214, 219, 228),
+            1,
+            lineType=cv2.LINE_AA,
+        )
+        stats_y += 22
+
+    plot_left = x1 + 22
+    plot_top = y1 + 110
+    plot_right = x2 - 22
+    plot_bottom = y2 - 56
+    plot_width = max(plot_right - plot_left, 10)
+    plot_height = max(plot_bottom - plot_top, 10)
+
+    cv2.rectangle(frame, (plot_left, plot_top), (plot_right, plot_bottom), (34, 40, 53), 1)
+
+    points = diagnostics["screen_points"] + diagnostics["phone_points"]
+    boundary = float(diagnostics["decision_boundary"])
+    x_values = [float(point["score"]) for point in points] + [boundary]
+    x_min = min(x_values)
+    x_max = max(x_values)
+    if abs(x_max - x_min) < 1e-6:
+        x_min -= 1.0
+        x_max += 1.0
+    x_padding = (x_max - x_min) * 0.12
+    x_min -= x_padding
+    x_max += x_padding
+
+    y_values = [float(point["distance"]) for point in points]
+    y_values.extend(
+        [
+            float(diagnostics["screen_distance_limit"]),
+            float(diagnostics["phone_distance_limit"]),
+        ]
+    )
+    y_min = 0.0
+    y_max = max(y_values) if y_values else 1.0
+    y_max = max(y_max * 1.15, 1.0)
+
+    def map_x(value: float) -> int:
+        ratio = (value - x_min) / (x_max - x_min)
+        return plot_left + int(np.clip(ratio, 0.0, 1.0) * plot_width)
+
+    def map_y(value: float) -> int:
+        ratio = (value - y_min) / (y_max - y_min)
+        return plot_bottom - int(np.clip(ratio, 0.0, 1.0) * plot_height)
+
+    boundary_x = map_x(boundary)
+    cv2.line(
+        frame,
+        (boundary_x, plot_top),
+        (boundary_x, plot_bottom),
+        (150, 150, 150),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "decision boundary",
+        (max(plot_left, boundary_x - 55), plot_top - 8),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.4,
+        (185, 185, 185),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+
+    screen_limit_y = map_y(float(diagnostics["screen_distance_limit"]))
+    phone_limit_y = map_y(float(diagnostics["phone_distance_limit"]))
+    cv2.line(
+        frame,
+        (plot_left, screen_limit_y),
+        (plot_right, screen_limit_y),
+        (0, 135, 0),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.line(
+        frame,
+        (plot_left, phone_limit_y),
+        (plot_right, phone_limit_y),
+        (0, 120, 180),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+
+    def draw_points(
+        point_list: list[dict[str, float | bool]],
+        color: tuple[int, int, int],
+    ) -> None:
+        for point in point_list:
+            px = map_x(float(point["score"]))
+            py = map_y(float(point["distance"]))
+            cv2.circle(frame, (px, py), 4, color, -1, lineType=cv2.LINE_AA)
+            if not bool(point["correct"]):
+                cv2.circle(frame, (px, py), 7, (0, 0, 255), 1, lineType=cv2.LINE_AA)
+
+    draw_points(diagnostics["screen_points"], (0, 190, 0))
+    draw_points(diagnostics["phone_points"], (0, 165, 255))
+
+    cv2.putText(
+        frame,
+        "Score: left=phone  right=screen",
+        (plot_left, plot_bottom + 22),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (214, 219, 228),
+        1,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        "Y axis: distance to own center (lower is better)",
+        (plot_left, plot_bottom + 42),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.42,
+        (214, 219, 228),
+        1,
+        lineType=cv2.LINE_AA,
+    )
 
 
 def normalize_download_path(downloaded_path: Path, final_path: Path) -> Path:
@@ -857,6 +1029,59 @@ def classify_attention(
     return looking_at_screen, enriched_metrics
 
 
+def build_calibration_diagnostics(
+    screen_samples: list[dict[str, float]],
+    phone_samples: list[dict[str, float]],
+    calibration_profile: dict[str, Any],
+) -> dict[str, Any]:
+    screen_center = np.array(calibration_profile["screen_center"], dtype=np.float64)
+    screen_scale = np.array(calibration_profile["screen_scale"], dtype=np.float64)
+    phone_center = np.array(calibration_profile["phone_center"], dtype=np.float64)
+    phone_scale = np.array(calibration_profile["phone_scale"], dtype=np.float64)
+
+    def project_samples(
+        samples: list[dict[str, float]],
+        expected_state: str,
+    ) -> tuple[list[dict[str, float | bool]], float]:
+        points: list[dict[str, float | bool]] = []
+        correct_count = 0
+        for sample in samples:
+            vector = metrics_to_vector(sample)
+            screen_distance = compute_profile_distance(vector, screen_center, screen_scale)
+            phone_distance = compute_profile_distance(vector, phone_center, phone_scale)
+            screen_score = phone_distance - screen_distance
+            _, enriched = classify_attention(sample, calibration_profile)
+            predicted_state = str(enriched.get("attention_state", "away"))
+            is_correct = predicted_state == expected_state
+            if is_correct:
+                correct_count += 1
+            points.append(
+                {
+                    "score": screen_score,
+                    "distance": screen_distance if expected_state == "screen" else phone_distance,
+                    "correct": is_correct,
+                }
+            )
+
+        accuracy = correct_count / len(samples) if samples else 0.0
+        return points, accuracy
+
+    screen_points, screen_accuracy = project_samples(screen_samples, "screen")
+    phone_points, phone_accuracy = project_samples(phone_samples, "phone")
+    fit_score = ((screen_accuracy + phone_accuracy) / 2.0) * 100.0
+
+    return {
+        "screen_points": screen_points,
+        "phone_points": phone_points,
+        "screen_fit_accuracy": screen_accuracy,
+        "phone_fit_accuracy": phone_accuracy,
+        "fit_score": fit_score,
+        "decision_boundary": float(calibration_profile["decision_boundary"]),
+        "screen_distance_limit": float(calibration_profile["screen_distance_limit"]),
+        "phone_distance_limit": float(calibration_profile["phone_distance_limit"]),
+    }
+
+
 class ControlledVideoPlayer:
     def __init__(
         self,
@@ -1093,6 +1318,28 @@ def run_validation_phase(
         "Verification ecran" if target == "screen" else "Verification telephone"
     )
 
+    settle_end = time.monotonic() + ANNOUNCEMENT_SETTLE_SECONDS
+    while time.monotonic() < settle_end:
+        ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
+        if not ok or frame is None:
+            return None
+        if landmarks is not None:
+            draw_face_visuals(frame, landmarks, color_override=(255, 190, 0))
+        draw_text_block(
+            frame,
+            [
+                "Verification calibration",
+                message,
+                "Change de position maintenant",
+                f"Capture dans {settle_end - time.monotonic():.1f}s",
+            ],
+            color=(255, 255, 255),
+        )
+        cv2.imshow(WINDOW_NAME, frame)
+        key = cv2.waitKey(1) & 0xFF
+        if key in (27, ord("q"), ord("Q")):
+            return None
+
     prep_end = time.monotonic() + VALIDATION_PREP_SECONDS
     while time.monotonic() < prep_end:
         ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
@@ -1239,6 +1486,29 @@ def run_calibration(
                 else "Regarde ton telephone"
             )
             announce_calibration_change(calibration_instruction)
+            settle_end = time.monotonic() + ANNOUNCEMENT_SETTLE_SECONDS
+            while time.monotonic() < settle_end:
+                ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
+                if not ok or frame is None:
+                    return None
+                if landmarks is not None:
+                    draw_face_visuals(frame, landmarks, color_override=(0, 220, 255))
+
+                draw_text_block(
+                    frame,
+                    [
+                        "Calibration en cours",
+                        message,
+                        "Change de position maintenant",
+                        f"Capture dans {settle_end - time.monotonic():.1f}s",
+                    ],
+                    color=(255, 255, 255),
+                )
+                cv2.imshow(WINDOW_NAME, frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key in (27, ord("q"), ord("Q")):
+                    return None
+
             prep_end = time.monotonic() + CALIBRATION_PREP_SECONDS
             while time.monotonic() < prep_end:
                 ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
@@ -1254,7 +1524,7 @@ def run_calibration(
                         "Calibration en cours",
                         message,
                         f"Debut dans {remaining:.1f}s",
-                        "Un son te dit quand changer",
+                        "Reste stable",
                         "Q ou ESC pour annuler",
                     ],
                     color=(255, 255, 255),
@@ -1291,6 +1561,7 @@ def run_calibration(
                         f"Temps restant {remaining:.1f}s",
                         f"Echantillons valides: {len(step_samples)}",
                         live_score_text,
+                        "Plus le score est haut, plus la pose est stable",
                     ],
                     color=(255, 255, 255),
                 )
@@ -1328,7 +1599,11 @@ def run_calibration(
                     return None
 
     profile = build_calibration_profile(screen_samples, phone_samples)
+    diagnostics = build_calibration_diagnostics(screen_samples, phone_samples, profile)
     validation = run_calibration_validation(camera, face_landmarker, profile)
+    diagnostics["validation_score"] = (
+        validation["validation_score"] if validation is not None else None
+    )
     if validation is not None:
         profile.update(
             {
@@ -1338,11 +1613,22 @@ def run_calibration(
                 "phone_validation_accuracy": validation["phone_validation_accuracy"],
                 "screen_validation_total": int(validation["screen_validation_total"]),
                 "phone_validation_total": int(validation["phone_validation_total"]),
+                "screen_fit_accuracy": diagnostics["screen_fit_accuracy"],
+                "phone_fit_accuracy": diagnostics["phone_fit_accuracy"],
+                "fit_score": diagnostics["fit_score"],
+            }
+        )
+    else:
+        profile.update(
+            {
+                "screen_fit_accuracy": diagnostics["screen_fit_accuracy"],
+                "phone_fit_accuracy": diagnostics["phone_fit_accuracy"],
+                "fit_score": diagnostics["fit_score"],
             }
         )
     save_calibration_profile(profile)
 
-    success_end = time.monotonic() + 5.0
+    success_end = time.monotonic() + 7.0
     while time.monotonic() < success_end:
         ok, frame, landmarks = read_and_process_frame(camera, face_landmarker)
         if not ok or frame is None:
@@ -1350,6 +1636,7 @@ def run_calibration(
         if landmarks is not None:
             draw_face_visuals(frame, landmarks, color_override=(0, 220, 255))
         draw_calibration_summary_panel(frame, profile)
+        draw_calibration_diagnostics_panel(frame, diagnostics)
         validation_score = float(profile.get("validation_score", 0.0))
         validation_status = (
             "CHECK OK"
@@ -1363,7 +1650,7 @@ def run_calibration(
                 "Le profil a ete enregistre",
                 f"Score verification: {validation_score:.0f}/100",
                 validation_status,
-                "Lis le panneau a droite pour voir les moyennes calculees",
+                "Droite: moyennes   Gauche: separation du classifieur",
             ],
             color=(0, 220, 120) if bool(profile.get("validation_passed")) else (0, 190, 255),
         )
