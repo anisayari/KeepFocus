@@ -51,6 +51,10 @@ CAMERA_CAPTURE_WIDTH = 1280
 CAMERA_CAPTURE_HEIGHT = 720
 CAMERA_WINDOW_WIDTH = 1440
 CAMERA_WINDOW_HEIGHT = 920
+PLAYER_WINDOW_WIDTH = 460
+PLAYER_WINDOW_HEIGHT = 280
+PLAYER_WINDOW_X = 26
+PLAYER_WINDOW_Y = 34
 HEADER_HEIGHT = 72
 CALIBRATION_REPETITIONS = 4
 ANNOUNCEMENT_SETTLE_SECONDS = 1.0
@@ -62,6 +66,13 @@ VALIDATION_PREP_SECONDS = 1.0
 VALIDATION_CAPTURE_SECONDS = 2.0
 VALIDATION_MIN_SAMPLES = 10
 VALIDATION_PASS_SCORE = 80.0
+METRIC_SMOOTHING_ALPHA = 0.24
+STATE_CONFIRM_FRAMES_SCREEN = 3
+STATE_CONFIRM_FRAMES_PHONE = 3
+STATE_CONFIRM_FRAMES_AWAY = 7
+SCREEN_OFFSET_ADAPT_ALPHA = 0.05
+SCREEN_OFFSET_MAX = np.array([14.0, 14.0, 10.0, 0.18, 0.18], dtype=np.float64)
+SCREEN_ADAPT_MARGIN = 0.7
 CALIBRATION_FEATURE_KEYS = ("yaw", "pitch", "roll", "gaze_x", "gaze_y")
 CALIBRATION_SCALE_FLOOR = np.array([8.0, 8.0, 6.0, 0.08, 0.08], dtype=np.float64)
 CALIBRATION_FEATURE_WEIGHTS = np.array([1.0, 1.0, 0.8, 1.25, 1.25], dtype=np.float64)
@@ -206,6 +217,13 @@ def metrics_to_vector(metrics: dict[str, float]) -> np.ndarray:
     return np.array([metrics[key] for key in CALIBRATION_FEATURE_KEYS], dtype=np.float64)
 
 
+def vector_to_metrics(vector: np.ndarray) -> dict[str, float]:
+    return {
+        key: float(value)
+        for key, value in zip(CALIBRATION_FEATURE_KEYS, vector, strict=True)
+    }
+
+
 def compute_profile_distance(
     vector: np.ndarray,
     center: np.ndarray,
@@ -224,6 +242,78 @@ def compute_step_stability_score(samples: list[dict[str, float]]) -> float | Non
     normalized = (spreads / CALIBRATION_SCALE_FLOOR) * CALIBRATION_FEATURE_WEIGHTS
     raw_score = float(np.linalg.norm(normalized))
     return float(np.clip(100.0 - raw_score * 26.0, 0.0, 100.0))
+
+
+class MetricSmoother:
+    def __init__(self, alpha: float) -> None:
+        self.alpha = alpha
+        self.vector: np.ndarray | None = None
+
+    def update(self, metrics: dict[str, float]) -> dict[str, float]:
+        current = metrics_to_vector(metrics)
+        if self.vector is None:
+            self.vector = current
+        else:
+            self.vector = (1.0 - self.alpha) * self.vector + self.alpha * current
+        return vector_to_metrics(self.vector)
+
+
+class AttentionStabilizer:
+    def __init__(self) -> None:
+        self.stable_state = "screen"
+        self.pending_state = "screen"
+        self.pending_count = 0
+
+    def update(self, raw_state: str) -> str:
+        if raw_state == self.pending_state:
+            self.pending_count += 1
+        else:
+            self.pending_state = raw_state
+            self.pending_count = 1
+
+        required = {
+            "screen": STATE_CONFIRM_FRAMES_SCREEN,
+            "phone": STATE_CONFIRM_FRAMES_PHONE,
+            "away": STATE_CONFIRM_FRAMES_AWAY,
+        }.get(raw_state, STATE_CONFIRM_FRAMES_SCREEN)
+        if self.pending_count >= required:
+            self.stable_state = raw_state
+        return self.stable_state
+
+
+class ScreenOffsetAdaptor:
+    def __init__(self, calibration_profile: dict[str, Any] | None) -> None:
+        self.base_screen_center = (
+            np.array(calibration_profile["screen_center"], dtype=np.float64)
+            if calibration_profile is not None
+            else None
+        )
+        self.offset = np.zeros(len(CALIBRATION_FEATURE_KEYS), dtype=np.float64)
+
+    def current_offset(self) -> np.ndarray | None:
+        if self.base_screen_center is None:
+            return None
+        return self.offset
+
+    def maybe_update(
+        self,
+        smoothed_metrics: dict[str, float],
+        classification: dict[str, float],
+    ) -> None:
+        if self.base_screen_center is None:
+            return
+        if classification.get("attention_state") != "screen":
+            return
+        if classification.get("screen_margin", -999.0) < SCREEN_ADAPT_MARGIN:
+            return
+
+        observed = metrics_to_vector(smoothed_metrics)
+        delta = observed - self.base_screen_center
+        delta = np.clip(delta, -SCREEN_OFFSET_MAX, SCREEN_OFFSET_MAX)
+        self.offset = (
+            (1.0 - SCREEN_OFFSET_ADAPT_ALPHA) * self.offset
+            + SCREEN_OFFSET_ADAPT_ALPHA * delta
+        )
 
 
 def build_calibration_profile(
@@ -266,8 +356,8 @@ def build_calibration_profile(
     decision_boundary = float(
         (np.percentile(screen_scores, 20) + np.percentile(phone_scores, 80)) / 2.0
     )
-    screen_distance_limit = float(max(np.percentile(screen_self_distances, 90) + 0.35, 1.75))
-    phone_distance_limit = float(max(np.percentile(phone_self_distances, 90) + 0.35, 1.75))
+    screen_distance_limit = float(max(np.percentile(screen_self_distances, 92) + 0.65, 2.2))
+    phone_distance_limit = float(max(np.percentile(phone_self_distances, 92) + 0.65, 2.2))
 
     return {
         "version": 1,
@@ -979,6 +1069,8 @@ def extract_attention_metrics(
 def classify_attention(
     metrics: dict[str, float],
     calibration_profile: dict[str, Any] | None,
+    *,
+    feature_offset: np.ndarray | None = None,
 ) -> tuple[bool, dict[str, float]]:
     enriched_metrics = dict(metrics)
 
@@ -995,10 +1087,13 @@ def classify_attention(
         looking_at_screen = head_centered and gaze_centered
         enriched_metrics["screen_score"] = 1.0 if looking_at_screen else -1.0
         enriched_metrics["classification_mode"] = 0.0
+        enriched_metrics["screen_margin"] = 1.0 if looking_at_screen else -1.0
         enriched_metrics["attention_state"] = "screen" if looking_at_screen else "away"
         return looking_at_screen, enriched_metrics
 
     vector = metrics_to_vector(metrics)
+    if feature_offset is not None:
+        vector = vector - feature_offset
     screen_center = np.array(calibration_profile["screen_center"], dtype=np.float64)
     screen_scale = np.array(calibration_profile["screen_scale"], dtype=np.float64)
     phone_center = np.array(calibration_profile["phone_center"], dtype=np.float64)
@@ -1007,9 +1102,10 @@ def classify_attention(
     screen_distance = compute_profile_distance(vector, screen_center, screen_scale)
     phone_distance = compute_profile_distance(vector, phone_center, phone_scale)
     screen_score = phone_distance - screen_distance
+    screen_margin = screen_score - float(calibration_profile["decision_boundary"])
     phone_score = screen_distance - phone_distance
     looking_at_screen = (
-        screen_score >= float(calibration_profile["decision_boundary"])
+        screen_margin >= 0.0
         and screen_distance <= float(calibration_profile["screen_distance_limit"])
     )
     looking_at_phone = (
@@ -1023,6 +1119,7 @@ def classify_attention(
     enriched_metrics["phone_distance"] = phone_distance
     enriched_metrics["screen_score"] = screen_score
     enriched_metrics["phone_score"] = phone_score
+    enriched_metrics["screen_margin"] = screen_margin
     enriched_metrics["decision_boundary"] = float(calibration_profile["decision_boundary"])
     enriched_metrics["attention_state"] = attention_state
     enriched_metrics["classification_mode"] = 1.0
@@ -1099,6 +1196,7 @@ class ControlledVideoPlayer:
         self.server_thread: threading.Thread | None = None
         self.state_lock = threading.Lock()
         self.playing = False
+        self.play_request_id = 0
 
     @property
     def is_active(self) -> bool:
@@ -1115,7 +1213,12 @@ class ControlledVideoPlayer:
             def do_GET(self):
                 if self.path.split("?", 1)[0] == "/state":
                     with player.state_lock:
-                        payload = json.dumps({"playing": player.playing}).encode("utf-8")
+                        payload = json.dumps(
+                            {
+                                "playing": player.playing,
+                                "play_request_id": player.play_request_id,
+                            }
+                        ).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Content-Length", str(len(payload)))
@@ -1123,7 +1226,10 @@ class ControlledVideoPlayer:
                     self.end_headers()
                     self.wfile.write(payload)
                     return
-                super().do_GET()
+                try:
+                    super().do_GET()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
 
             def log_message(self, format, *args):
                 return
@@ -1187,7 +1293,8 @@ class ControlledVideoPlayer:
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-session-crashed-bubble",
                 "--no-first-run",
-                "--window-size=1280,760",
+                f"--window-size={PLAYER_WINDOW_WIDTH},{PLAYER_WINDOW_HEIGHT}",
+                f"--window-position={PLAYER_WINDOW_X},{PLAYER_WINDOW_Y}",
                 f"--app=http://127.0.0.1:{self.port}/{self.player_html.name}",
             ],
             stdout=subprocess.DEVNULL,
@@ -1198,6 +1305,7 @@ class ControlledVideoPlayer:
     def start(self) -> None:
         with self.state_lock:
             self.playing = True
+            self.play_request_id += 1
         try:
             self._ensure_window()
         except Exception:
@@ -1841,6 +1949,16 @@ def draw_status_overlay(
                 (220, 220, 220),
                 1,
             )
+            if metrics.get("raw_attention_state") and metrics["raw_attention_state"] != metrics.get("attention_state"):
+                cv2.putText(
+                    frame,
+                    f"Raw: {str(metrics['raw_attention_state']).upper()}",
+                    (420, bottom_y - 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.48,
+                    (180, 180, 180),
+                    1,
+                )
 
 
 def calibration_mode_text(calibration_profile: dict[str, Any] | None) -> str:
@@ -1904,7 +2022,9 @@ def main() -> int:
             calibration_profile = saved_calibration_profile
 
     calibration_mode_label = calibration_mode_text(calibration_profile)
-
+    metric_smoother = MetricSmoother(METRIC_SMOOTHING_ALPHA)
+    attention_stabilizer = AttentionStabilizer()
+    screen_offset_adaptor = ScreenOffsetAdaptor(calibration_profile)
     last_looking_time = time.monotonic()
 
     try:
@@ -1917,21 +2037,31 @@ def main() -> int:
             face_found = landmarks is not None
             looking_at_screen = False
             attention_state = "away"
+            raw_attention_state = "away"
             metrics: dict[str, float] = {}
 
             if face_found:
-                metrics = extract_attention_metrics(landmarks, frame.shape[1], frame.shape[0])
+                raw_metrics = extract_attention_metrics(landmarks, frame.shape[1], frame.shape[0])
+                smoothed_metrics = metric_smoother.update(raw_metrics)
                 looking_at_screen, metrics = classify_attention(
-                    metrics,
+                    smoothed_metrics,
                     calibration_profile,
+                    feature_offset=screen_offset_adaptor.current_offset(),
                 )
-                attention_state = str(
+                raw_attention_state = str(
                     metrics.get(
                         "attention_state",
                         "screen" if looking_at_screen else "away",
                     )
                 )
+                attention_state = attention_stabilizer.update(raw_attention_state)
+                metrics["raw_attention_state"] = raw_attention_state
+                metrics["attention_state"] = attention_state
+                screen_offset_adaptor.maybe_update(smoothed_metrics, metrics)
+                looking_at_screen = attention_state == "screen"
                 draw_face_visuals(frame, landmarks, looking_at_screen)
+            else:
+                attention_state = attention_stabilizer.update("away")
 
             now = time.monotonic()
             if attention_state in {"screen", "phone"}:
@@ -1972,6 +2102,9 @@ def main() -> int:
                 if updated_profile is not None:
                     calibration_profile = updated_profile
                     calibration_mode_label = calibration_mode_text(calibration_profile)
+                    metric_smoother = MetricSmoother(METRIC_SMOOTHING_ALPHA)
+                    attention_stabilizer = AttentionStabilizer()
+                    screen_offset_adaptor = ScreenOffsetAdaptor(calibration_profile)
                 last_looking_time = time.monotonic()
                 continue
             if key in (27, ord("q"), ord("Q")):

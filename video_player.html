@@ -7,10 +7,12 @@
   <style>
     :root {
       color-scheme: dark;
-      --bg: #05070d;
-      --panel: rgba(18, 24, 38, 0.82);
-      --accent: #ff5a36;
-      --muted: #aab6c9;
+      --bg: rgba(7, 11, 20, 0.94);
+      --panel: rgba(19, 26, 40, 0.84);
+      --border: rgba(255, 255, 255, 0.14);
+      --text: #f4f7fb;
+      --muted: #adb8c8;
+      --accent: #ff6f43;
     }
 
     * {
@@ -19,112 +21,191 @@
 
     html, body {
       margin: 0;
-      background:
-        radial-gradient(circle at top, rgba(255, 90, 54, 0.18), transparent 32%),
-        linear-gradient(180deg, #0a0f1b 0%, var(--bg) 70%);
+      width: 100%;
       height: 100%;
       overflow: hidden;
+      background: transparent;
       font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+      color: var(--text);
     }
 
     body {
-      display: grid;
-      place-items: center;
+      padding: 10px;
     }
 
-    video {
-      width: 100vw;
-      height: 100vh;
-      object-fit: contain;
-      background: #000;
+    .shell {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      border-radius: 24px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at top left, rgba(255, 111, 67, 0.25), transparent 36%),
+        linear-gradient(180deg, rgba(12, 18, 30, 0.98), rgba(5, 7, 13, 0.96));
+      border: 1px solid var(--border);
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+      transform: translateX(-26px) scale(0.88);
+      opacity: 0.76;
+      transition: transform 180ms ease, opacity 180ms ease;
     }
 
-    .badge,
-    .hint,
-    .intro {
-      position: fixed;
-      z-index: 10;
-      padding: 10px 14px;
+    body.is-playing .shell {
+      transform: translateX(0) scale(1);
+      opacity: 1;
+    }
+
+    .header {
+      position: absolute;
+      inset: 0 0 auto 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px 0;
+      pointer-events: none;
+    }
+
+    .brand,
+    .status {
+      padding: 8px 11px;
       border-radius: 999px;
       backdrop-filter: blur(10px);
       background: var(--panel);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      letter-spacing: 0.04em;
-    }
-
-    .badge {
-      top: 18px;
-      left: 18px;
-      font-size: 12px;
+      border: 1px solid var(--border);
+      font-size: 11px;
       font-weight: 700;
-      text-transform: uppercase;
-      color: #fff;
-    }
-
-    .hint {
-      right: 18px;
-      bottom: 18px;
-      max-width: 340px;
-      font-size: 13px;
-      line-height: 1.35;
-      color: var(--muted);
-    }
-
-    .intro {
-      left: 18px;
-      bottom: 18px;
-      max-width: 420px;
-      padding: 16px 18px;
-      font-size: 14px;
-      line-height: 1.35;
-      color: #fff;
-    }
-
-    .intro strong {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 22px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
 
-    .is-playing .badge {
-      background: rgba(255, 90, 54, 0.22);
-      border-color: rgba(255, 90, 54, 0.5);
-      color: #fff1ed;
+    .status.is-playing {
+      background: rgba(255, 111, 67, 0.2);
+      border-color: rgba(255, 111, 67, 0.45);
+      color: #fff0eb;
     }
 
-    .is-playing .hint,
-    .is-playing .intro {
-      opacity: 0;
+    .intro {
+      position: absolute;
+      left: 14px;
+      right: 14px;
+      bottom: 14px;
+      z-index: 3;
+      padding: 12px 14px;
+      border-radius: 18px;
+      backdrop-filter: blur(10px);
+      background: rgba(10, 14, 24, 0.82);
+      border: 1px solid var(--border);
+      transition: opacity 140ms ease, transform 140ms ease;
       pointer-events: none;
+    }
+
+    body.is-playing .intro {
+      opacity: 0;
       transform: translateY(10px);
     }
 
-    .hint,
-    .badge,
-    .intro {
-      transition: opacity 140ms ease, transform 140ms ease, background 140ms ease;
+    .intro strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 18px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .intro span {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.35;
+    }
+
+    .video-wrap {
+      position: absolute;
+      inset: 0;
+      padding-top: 44px;
+      display: flex;
+      align-items: stretch;
+      justify-content: stretch;
+    }
+
+    video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #000;
     }
   </style>
 </head>
 <body>
-  <div class="badge" id="status">Waiting</div>
-  <div class="intro"><strong>Keep Focus!</strong>Stop scrolling or I will start tamtam!</div>
-  <div class="hint">The video starts with sound as soon as you look away. It pauses again when you come back to the screen.</div>
-  <video id="player" preload="auto" playsinline></video>
+  <div class="shell">
+    <div class="header">
+      <div class="brand">Keep Focus!</div>
+      <div class="status" id="status">Waiting</div>
+    </div>
+    <div class="video-wrap">
+      <video id="player" preload="auto" playsinline></video>
+    </div>
+    <div class="intro">
+      <strong>Stop scrolling</strong>
+      <span>Or I will start tamtam. The panel slides in on the left as soon as you look away.</span>
+    </div>
+  </div>
   <script>
     const player = document.getElementById("player");
     const status = document.getElementById("status");
     let desiredPlaying = false;
-    let lastDesiredPlaying = false;
+    let lastPlayRequestId = 0;
+    let playbackRetry = null;
 
     player.src = "/videos/youtube_trigger_video.mp4";
     player.volume = 1.0;
+    player.autoplay = true;
 
     function reflectUi(isPlaying) {
       document.body.classList.toggle("is-playing", isPlaying);
       status.textContent = isPlaying ? "Playing" : "Waiting";
+      status.classList.toggle("is-playing", isPlaying);
+    }
+
+    function clearRetry() {
+      if (playbackRetry !== null) {
+        clearTimeout(playbackRetry);
+        playbackRetry = null;
+      }
+    }
+
+    function scheduleRetry() {
+      clearRetry();
+      playbackRetry = setTimeout(() => {
+        ensurePlayback();
+      }, 140);
+    }
+
+    async function ensurePlayback() {
+      if (!desiredPlaying) {
+        return;
+      }
+
+      if (player.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        scheduleRetry();
+        return;
+      }
+
+      try {
+        await player.play();
+        clearRetry();
+        reflectUi(true);
+      } catch (_) {
+        scheduleRetry();
+      }
+    }
+
+    function stopPlayback() {
+      clearRetry();
+      if (!player.paused) {
+        player.pause();
+      }
+      reflectUi(false);
     }
 
     async function syncState() {
@@ -132,31 +213,46 @@
         const response = await fetch("/state", { cache: "no-store" });
         const data = await response.json();
         desiredPlaying = !!data.playing;
+        const playRequestId = Number(data.play_request_id || 0);
 
-        if (desiredPlaying) {
-          if (!lastDesiredPlaying) {
-            player.currentTime = 0;
-          }
-          if (player.paused) {
-            await player.play().catch(() => {});
-          }
-        } else if (!player.paused) {
-          player.pause();
+        if (desiredPlaying && playRequestId !== lastPlayRequestId) {
+          lastPlayRequestId = playRequestId;
+          player.currentTime = 0;
+          player.load();
         }
 
-        reflectUi(desiredPlaying);
-        lastDesiredPlaying = desiredPlaying;
+        if (desiredPlaying) {
+          await ensurePlayback();
+        } else {
+          stopPlayback();
+        }
       } catch (_) {
       }
     }
 
-    player.addEventListener("canplay", () => {
-      if (desiredPlaying && player.paused) {
-        player.play().catch(() => {});
+    player.addEventListener("loadeddata", () => {
+      if (desiredPlaying) {
+        ensurePlayback();
       }
     });
 
-    setInterval(syncState, 100);
+    player.addEventListener("canplay", () => {
+      if (desiredPlaying) {
+        ensurePlayback();
+      }
+    });
+
+    player.addEventListener("play", () => {
+      reflectUi(true);
+    });
+
+    player.addEventListener("pause", () => {
+      if (!desiredPlaying) {
+        reflectUi(false);
+      }
+    });
+
+    setInterval(syncState, 80);
     reflectUi(false);
     syncState();
   </script>

@@ -6,10 +6,11 @@ Cross-platform tool for macOS and Windows that tracks your gaze with the webcam 
 
 - when you look at the screen, the video pauses and stays hidden 🛑
 - when you look at your phone, the video stays hidden 📱
-- when you genuinely look away, the video comes to the foreground and starts with sound 🥁
+- when you genuinely look away, a smaller top-left video panel slides in and starts with sound 🥁
 - calibration can play a sound and speak on macOS to tell you when to switch target 🔊
 - after each calibration announcement, there is a short repositioning delay before capture starts ⏱️
 - calibration now captures more samples for each target 📊
+- gaze detection is smoothed over time and stabilized across several frames for better robustness 🧱
 - during calibration, a stability score is shown live ✅
 - after calibration, a verification pass gives you a final score and a clear check result 🎯
 - right after calibration, one panel shows the average `screen` and `phone` values used by the classifier 📈
