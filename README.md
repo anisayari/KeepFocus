@@ -1,6 +1,6 @@
 # Gaze Focus TamTam
 
-macOS tool that tracks your gaze with the webcam:
+Cross-platform tool for macOS and Windows that tracks your gaze with the webcam:
 
 - when you look at the screen, the video pauses and stays hidden
 - when you look at your phone, the video stays hidden
@@ -29,6 +29,19 @@ The script:
 - loads the local video
 - asks whether you want to calibrate at startup
 
+## Run on Windows
+
+Double-click [run_windows.bat](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/run_windows.bat).
+
+Compatibility note: [lancer.bat](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/lancer.bat) still works and simply forwards to `run_windows.bat`.
+
+The Windows script:
+
+- creates `.venv` if needed
+- installs dependencies
+- launches `main.py`
+- prints Python errors before closing
+
 ## Shortcuts
 
 - `C` at startup: start calibration
@@ -42,10 +55,13 @@ The script:
 - [video_player.html](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/video_player.html): video window
 - [videos/youtube_trigger_video.mp4](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/videos/youtube_trigger_video.mp4): video clip played when you look away
 - [models/face_landmarker.task](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/models/face_landmarker.task): MediaPipe model
+- [run_mac.command](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/run_mac.command): macOS launcher
+- [run_windows.bat](/Users/anisayari/Desktop/projects/gaze-focus-tamtam/run_windows.bat): Windows launcher
 
 ## Notes
 
 - Chrome is preferred on macOS for the video player.
+- Chrome or Edge works on Windows.
 - The calibration profile is saved in `attention_calibration.json`.
 - The video window comes to the front when the state becomes `away`.
 - On macOS, the video window is hidden again when the state returns to `screen` or `phone`.
